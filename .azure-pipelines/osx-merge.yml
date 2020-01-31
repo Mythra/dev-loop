@@ -22,7 +22,7 @@ steps:
 
   - script: |
       mkdir -p ./scratch/
-      (cd ./scratch/ && curl -sSL -o dl https://hacky-pls-remove-soon-kfc.sfo2.digitaloceanspaces.com/dl-osx && chmod +x dl)
+      (cd ./scratch/ && curl -sSL -o dl https://github.com/SecurityInsanity/dev-loop/releases/download/0.1.0/dl-osx && chmod +x dl)
     displayName: Download Dev-Loop
 
   - script: |
