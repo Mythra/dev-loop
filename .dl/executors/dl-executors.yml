@@ -1,0 +1,38 @@
+---
+executors:
+  - type: host
+  - type: docker
+    params:
+      export_env: 'RUST_BACKTRACE'
+      extra_mounts: 'scratch/rust-git-cache/:/root/.cargo/git/,scratch/rust-registry-cache/:/root/.cargo/registry/'
+      image: 'clux/muslrust:1.41.0-stable'
+      name_prefix: 'rustc-musl-'
+    provides:
+      - name: bash
+        version: '4.0.0'
+      - name: rustc
+        version: '1.40.0'
+      - name: linux
+  - type: docker
+    params:
+      image: 'node:12.14'
+      name_prefix: 'nodejs-'
+    provides:
+      - name: nodejs
+        version: '12.14.0'
+      - name: bash
+        version: '4.0.0'
+      - name: linux
+  - type: docker
+    params:
+      image: 'node:12.14'
+      name_prefix: 'nodejs-with-port-'
+      tcp_ports_to_expose: '3000'
+    provides:
+      - name: nodejs-with-port
+        version: '12.14.0'
+      - name: nodejs
+        version: '12.14.0'
+      - name: bash
+        version: '4.0.0'
+      - name: linux

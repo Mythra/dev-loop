@@ -1,0 +1,38 @@
+---
+tasks:
+  - name: build-dl-osx-debug
+    type: pipeline
+    steps:
+      - name: rustc-build
+        task: cargo-build-osx
+      - name: rename-bin
+        task: rename
+        args:
+          - ./target/debug/dev-loop
+          - ./target/dl-osx
+    internal: true
+
+  - name: build-dl-osx-release
+    type: pipeline
+    steps:
+      - name: rustc-build
+        task: cargo-build-osx
+        args:
+          - release
+      - name: rename-release-bin
+        task: rename
+        args:
+          - ./target/release/dev-loop
+          - ./target/dl-osx-release
+    internal: true
+
+  - name: ci-only
+    description: commands that should really only be run on ci
+    type: oneof
+    options:
+      - name: build-osx-dl
+        description: build the dev-loop binary
+        task: build-dl-osx-debug
+      - name: build-osx-dl-release
+        description: build the dev-loop binary in release
+        task: build-dl-osx-release

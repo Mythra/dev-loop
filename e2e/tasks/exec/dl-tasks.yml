@@ -1,0 +1,45 @@
+---
+tasks:
+  - name: exec-pipeline
+    description: run all the exec tests in a pipeline
+    type: pipeline
+    steps:
+      - name: simple
+        task: simple-task
+      - name: host-docker-passoff
+        task: host-docker-passoff-pipeline
+      - name: nested-oneof
+        task: nested-oneof-pt1
+        args:
+          - option
+      - name: reuse-container
+        task: reuse-container-pipeline
+      - name: nested-pipelines
+        task: nested-pipelines-pipeline
+      - name: port-exposing-pipeline
+        task: port-exposing-pipeline
+
+  - name: exec-test
+    description: the top level command for tests for the `exec` command.
+    type: oneof
+    options:
+      - name: simple
+        task: simple-task
+        description: just a simple task
+      - name: host-docker-passoff
+        description: test a handoff of state in a file from host to docker to host again
+        task: host-docker-passoff-pipeline
+      - name: nested-oneof
+        description: test activating a nested oneof type
+        task: nested-oneof-pt1
+        args:
+          - option
+      - name: reuse-container
+        description: test that a container is reused
+        task: reuse-container-pipeline
+      - name: nested-pipelines
+        description: test the nesting of pipelines and it's order
+        task: nested-pipelines-pipeline
+      - name: port-exposing
+        description: test ports are exposed
+        task: port-exposing-pipeline

@@ -1,0 +1,81 @@
+---
+tasks:
+  - name: nested-pipelines-pipeline-one-task-one
+    location:
+      type: path
+      at: pipeline-one/task-one.sh
+    execution_needs:
+      - name: host
+    internal: true
+  - name: nested-pipelines-pipeline-one-task-two
+    location:
+      type: path
+      at: pipeline-one/task-two.sh
+    execution_needs:
+      - name: host
+    internal: true
+  - name: nested-pipelines-pipeline-one-task-three
+    location:
+      type: path
+      at: pipeline-one/task-three.sh
+    execution_needs:
+      - name: host
+    internal: true
+  - name: nested-pipelines-pipeline-one-task-four
+    location:
+      type: path
+      at: pipeline-one/task-four.sh
+    execution_needs:
+      - name: host
+    internal: true
+  - name: nested-pipelines-pipeline-one
+    type: pipeline
+    steps:
+      - name: nested-pipelines-pipeline-one-task-one
+        task: nested-pipelines-pipeline-one-task-one
+      - name: nested-pipelines-pipeline-one-task-two
+        task: nested-pipelines-pipeline-one-task-two
+      - name: nested-pipelines-pipeline-one-task-three
+        task: nested-pipelines-pipeline-one-task-three
+      - name: nested-pipelines-pipeline-one-task-four
+        task: nested-pipelines-pipeline-one-task-four
+    internal: true
+
+  - name: nested-pipelines-pipeline-two-task-one
+    location:
+      type: path
+      at: pipeline-two/task-one.sh
+    execution_needs:
+      - name: docker
+    internal: true
+  - name: nested-pipelines-pipeline-two
+    type: pipeline
+    steps:
+      - name: nested-pipelines-pipeline-two-task-one
+        task: nested-pipelines-pipeline-two-task-one
+    internal: true
+
+  - name: nested-pipelines-pipeline-three-task-one
+    location:
+      type: path
+      at: pipeline-three/task-one.sh
+    execution_needs:
+      - name: host
+    internal: true
+  - name: nested-pipelines-pipeline-three
+    type: pipeline
+    steps:
+      - name: nested-pipelines-pipeline-three-task-one
+        task: nested-pipelines-pipeline-three-task-one
+    internal: true
+
+  - name: nested-pipelines-pipeline
+    type: pipeline
+    steps:
+      - name: nested-pipelines-pipeline-one
+        task: nested-pipelines-pipeline-one
+      - name: nested-pipelines-pipeline-two
+        task: nested-pipelines-pipeline-two
+      - name: nested-pipelines-pipeline-three
+        task: nested-pipelines-pipeline-three
+    internal: true

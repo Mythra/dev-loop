@@ -1,0 +1,10 @@
+---
+tasks:
+  - name: rename
+    description: rename a binary
+    location:
+      type: path
+      at: rename.sh
+    execution_needs:
+      - name: host
+    internal: true

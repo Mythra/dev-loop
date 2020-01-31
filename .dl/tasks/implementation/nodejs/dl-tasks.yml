@@ -1,0 +1,23 @@
+---
+tasks:
+  - name: npm
+    description: shell out to npm, cd'ing into the first argument
+    internal: true
+    execution_needs:
+      - name: nodejs
+    location:
+      type: path
+      at: npm.sh
+    tags:
+      - nodejs
+  - name: npm-with-port
+    description: shell out to npm in a container that has port 3000 open
+    internal: true
+    execution_needs:
+      - name: nodejs-with-port
+    location:
+      type: path
+      at: npm.sh
+    tags:
+      - nodejs
+      - nodejs-with-port

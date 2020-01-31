@@ -1,0 +1,28 @@
+---
+tasks:
+  - name: port-exposing-pt-one
+    description: expose the ports
+    location:
+      type: path
+      at: part-one.sh
+    execution_needs:
+      - name: docker-ports
+    internal: true
+  - name: port-exposing-pt-two
+    description: ensure the ports are exposed
+    location:
+      type: path
+      at: part-two.sh
+    execution_needs:
+      - name: host
+    internal: true
+
+  - name: port-exposing-pipeline
+    description: expose the port pipelines
+    type: pipeline
+    steps:
+      - name: port-exposing-pt-one
+        task: port-exposing-pt-one
+      - name: port-exposing-pt-two
+        task: port-exposing-pt-two
+    internal: true

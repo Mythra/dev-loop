@@ -1,0 +1,28 @@
+---
+tasks:
+  - name: reuse-container-pt-one
+    description: sets the data inside the reused container
+    location:
+      type: path
+      at: pt1.sh
+    execution_needs:
+      - name: docker
+    internal: true
+  - name: reuse-container-pt-two
+    description: reads the data inside the reused container
+    location:
+      type: path
+      at: pt2.sh
+    execution_needs:
+      - name: docker
+    internal: true
+
+  - name: reuse-container-pipeline
+    description: run the reuse container path
+    type: pipeline
+    steps:
+      - name: pt-one
+        task: reuse-container-pt-one
+      - name: pt-two
+        task: reuse-container-pt-two
+    internal: true

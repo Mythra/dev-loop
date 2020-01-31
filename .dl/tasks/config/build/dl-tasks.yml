@@ -1,0 +1,45 @@
+---
+tasks:
+  - name: build-dl-debug
+    type: pipeline
+    steps:
+      - name: rustc-build
+        task: cargo-build
+      - name: rename-bin
+        task: rename
+        args:
+          - ./target/x86_64-unknown-linux-musl/debug/dev-loop
+          - ./target/dl
+    internal: true
+
+  - name: build-dl-release
+    type: pipeline
+    steps:
+      - name: rustc-build
+        task: cargo-build
+        args:
+          - release
+      - name: rename-release-bin
+        task: rename
+        args:
+          - ./target/x86_64-unknown-linux-musl/release/dev-loop
+          - ./target/dl-release
+    internal: true
+
+  - name: build
+    description: the top level build command
+    type: oneof
+    options:
+      - name: dl
+        description: build the dev-loop binary
+        task: build-dl-debug
+      - name: dl-release
+        description: build the dev-loop binary in release
+        task: build-dl-release
+      - name: docs
+        description: build the documentation site
+        task: npm
+        args:
+          - "docs/"
+          - "run"
+          - "build"

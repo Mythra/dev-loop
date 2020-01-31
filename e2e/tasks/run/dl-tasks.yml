@@ -1,0 +1,61 @@
+---
+tasks:
+  - name: sleep-run-host
+    description: sleep and than echo to a run state file
+    location:
+      type: path
+      at: sleep.sh
+    execution_needs:
+      - name: host
+    internal: true
+  - name: sleep-run-docker
+    description: sleep and than echo to a run state file
+    location:
+      type: path
+      at: sleep.sh
+    execution_needs:
+      - name: docker
+    internal: true
+
+  - name: sleep-pipeline-one
+    description: do not run directly, it will be run by run
+    type: pipeline
+    steps:
+      - name: echo
+        task: sleep-run-host
+        args:
+          - "0s"
+          - "1"
+      - name: echo-two
+        task: sleep-run-host
+        args:
+          - "5s"
+          - "2"
+      - name: echo-three
+        task: sleep-run-docker
+        args:
+          - "5s"
+          - "3"
+    tags:
+      - run
+  - name: sleep-pipeline-two
+    description: do not run directly, it will be run by run
+    type: pipeline
+    steps:
+      - name: echo
+        task: sleep-run-docker
+        args:
+          - "0s"
+          - "1"
+      - name: echo-two
+        task: sleep-run-docker
+        args:
+          - "5s"
+          - "2"
+      - name: echo-three
+        task: sleep-run-host
+        args:
+          - "5s"
+          - "3"
+    tags:
+      - run

@@ -1,0 +1,58 @@
+---
+tasks:
+  - name: cargo-build
+    description: build with cargo
+    location:
+      type: path
+      at: cargo-build.sh
+    execution_needs:
+      - name: rustc
+    tags:
+      - rust
+      - build
+    internal: true
+  - name: cargo-build-osx
+    description: perform the OSX build steps for dev-loop
+    location:
+      type: path
+      at: cargo-build-osx.sh
+    execution_needs:
+      - name: host
+    tags:
+      - rust
+      - build
+      - osx
+    internal: true
+  - name: cargo-fmt
+    description: apply formatting using cargo on the root of the project
+    location:
+      type: path
+      at: cargo-fmt.sh
+    execution_needs:
+      - name: rustc
+    tags:
+      - rust
+      - format
+    internal: true
+  - name: cargo-lint
+    description: check to ensure linting matches on all cargo projects
+    location:
+      type: path
+      at: cargo-lint.sh
+    execution_needs:
+      - name: rustc
+    tags:
+      - rust
+      - lint
+    internal: true
+  - name: cargo-test
+    description: test all the rust based tests
+    location:
+      type: path
+      at: cargo-test.sh
+    execution_needs:
+      - name: rustc
+    tags:
+      - rust
+      - test
+    internal: true

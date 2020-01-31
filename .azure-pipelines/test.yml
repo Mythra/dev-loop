@@ -1,0 +1,30 @@
+---
+trigger: none
+
+pr:
+  branches:
+    include:
+    - '*'
+
+pool:
+  vmImage: 'ubuntu-18.04'
+
+variables: []
+
+steps:
+  - task: DockerInstaller@0
+    displayName: Docker Installer
+    inputs:
+      releaseType: stable
+
+  - script: |
+      mkdir -p ./scratch/
+      (cd ./scratch/ && curl -sSL -o dl https://hacky-pls-remove-soon-kfc.sfo2.digitaloceanspaces.com/dl && chmod +x dl)
+    displayName: Download Dev-Loop
+
+  - script: |
+      ./scratch/dl exec lint
+    displayName: Lint Dev-Loop
+  - script: |
+      ./scratch/dl exec test
+    displayName: Test Dev-Loop

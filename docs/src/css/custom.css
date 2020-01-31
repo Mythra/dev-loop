@@ -1,0 +1,40 @@
+/* You can override the default Infima variables here. */
+:root {
+  --ifm-color-primary: #ED86FA;
+  --ifm-color-primary-dark: #B30045;
+  --ifm-color-primary-darker: #9E001F;
+  --ifm-color-primary-darkest: #870002;
+  --ifm-color-primary-light: #F4BBFD;
+  --ifm-color-primary-lighter: #F8D6FE;
+  --ifm-color-primary-lightest: #FDF2FF;
+  --ifm-code-font-size: 95%;
+
+	--dl-color-black: #1A1A1A;
+}
+
+.docusaurus-highlight-code-line {
+	border-left: .25em solid var(--ifm-color-primary-dark);
+	background-color: #022a4b;
+  display: block;
+  margin: 0 calc(-1 * var(--ifm-pre-padding));
+  padding: 0 var(--ifm-pre-padding);
+}
+
+.internal-link {
+  background-color: rgba(237, 134, 250, 0.8);
+	color: var(--dl-color-black);
+	text-decoration: none;
+
+	border-bottom: 1px solid rgba(0,0,0,0.5);
+	border-bottom-color: var(--ifm-color-primary);
+}
+
+.internal-link:hover,
+.internal-link:focus {
+	background-color: rgba(237, 134, 250, 1.0);
+  color: var(--dl-color-black);
+	text-decoration: none;
+
+	border-bottom: 1px solid rgba(0,0,0,1.0);
+	border-bottom-color: var(--ifm-color-primary-darkest);
+}

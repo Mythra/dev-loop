@@ -1,0 +1,36 @@
+---
+tasks:
+  - name: format
+    description: apply all formatting rules to the project
+    type: pipeline
+    steps:
+      - name: cargo-fmt
+        task: cargo-fmt
+    tags:
+      - format
+  - name: lint
+    description: run linters on the entire project.
+    type: pipeline
+    steps:
+      - name: cargo-lint
+        task: cargo-lint
+    tags:
+      - ci
+  - name: serve-docs
+    description: host the documentation site at localhost:3000
+    type: pipeline
+    steps:
+      - name: run docs site
+        task: npm-with-port
+        args:
+          - "docs/"
+          - "run"
+          - "start"
+  - name: test
+    description: run tests on the entire project
+    type: pipeline
+    steps:
+      - name: cargo-test
+        task: cargo-test
+    tags:
+      - ci

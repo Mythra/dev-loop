@@ -1,0 +1,25 @@
+---
+executor_locations:
+  - type: path
+    at: .dl/executors
+    recurse: true
+helper_locations:
+  - type: path
+    at: .dl/helpers
+    recurse: true
+task_locations:
+  - type: path
+    at: .dl/tasks
+    recurse: true
+
+ensure_directories:
+  - scratch/
+  - scratch/rust-git-cache/
+  - scratch/rust-registry-cache/
+
+presets:
+  - name: ci
+    description: run all tasks that ci would run
+    tags:
+      - lint
+      - ci

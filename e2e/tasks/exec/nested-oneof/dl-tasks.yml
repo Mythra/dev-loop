@@ -1,0 +1,28 @@
+---
+tasks:
+  - name: nested-oneof-pt3
+    type: command
+    location:
+      type: path
+      at: script.sh
+    execution_needs:
+      - name: host
+    internal: true
+
+  - name: nested-oneof-pt2
+    description: test the nesting of oneofs
+    type: oneof
+    options:
+      - name: option
+        task: nested-oneof-pt3
+    internal: true
+
+  - name: nested-oneof-pt1
+    description: test nesting of oneofs
+    type: oneof
+    options:
+      - name: option
+        task: nested-oneof-pt2
+        args:
+          - option
+    internal: true

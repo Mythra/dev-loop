@@ -1,0 +1,20 @@
+---
+executors:
+  - type: host
+  - type: docker
+    params:
+      extra_mounts: 'build/lol-mnt/:/mnt/lol-mnt/,build/:/mnt/build/,~/.a-very-not-taken-path:/mnt/never-mounted'
+      image: 'ubuntu:18.04'
+      name_prefix: 'ubuntu-'
+      user: 'root'
+    provides:
+      - name: docker
+  - type: docker
+    params:
+      image: 'ubuntu:18.04'
+      hostname: 'hostname-of-docker'
+      name_prefix: 'ubuntu-'
+      tcp_ports_to_expose: '25565'
+      udp_ports_to_expose: '25566'
+    provides:
+      - name: docker-ports
