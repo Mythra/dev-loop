@@ -35,7 +35,7 @@ term_size = "1.0.0-beta1"
 tracing = "^0.1"
 tracing-futures = "^0.2"
 tracing-log = "^0.1"
-tracing-subscriber = "^0.1"
+tracing-subscriber = "^0.2"
 twox-hash = "^1.5"
 url = { version = "^2.1" }
 uuid = { version = "^0.8", features = ["v4"] }
