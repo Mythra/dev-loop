@@ -7,10 +7,10 @@ use crate::get_tmp_dir;
 use crate::tasks::execution::preparation::ExecutableTask;
 use anyhow::{anyhow, Result};
 use async_std::fs::{read_dir, remove_dir_all};
-use async_std::path::PathBuf;
 use async_std::prelude::*;
 use crossbeam_channel::Sender;
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -27,8 +27,12 @@ pub struct HostExecutor {
 
 impl HostExecutor {
 	/// Create a new host executor, with nothing but the project root.
-	pub async fn new(project_root: PathBuf) -> Result<Self> {
-		let tmp_dir = get_tmp_dir().await;
+	///
+	/// # Errors
+	///
+	/// If the project root is not on a valid utf-8 string path.
+	pub fn new(project_root: &PathBuf) -> Result<Self> {
+		let tmp_dir = get_tmp_dir();
 		let pr_as_string = project_root.to_str();
 		if pr_as_string.is_none() {
 			return Err(anyhow!("Failed to turn project root into a utf-8 string!"));
@@ -42,13 +46,12 @@ impl HostExecutor {
 
 	/// Performs a clean up of all host resources.
 	#[allow(clippy::cognitive_complexity)]
-	#[tracing::instrument]
 	pub async fn clean() {
 		info!("Starting Cleanup for the host executor");
 
 		// To clean all we would possibly have leftover is files in $TMPDIR.
 		// So we iterate through everything in the temporary directory...
-		if let Ok(mut entries) = read_dir(get_tmp_dir().await).await {
+		if let Ok(mut entries) = read_dir(get_tmp_dir()).await {
 			while let Some(resulting_entry) = entries.next().await {
 				// Did we get something?
 				if let Ok(entry_de) = resulting_entry {
@@ -96,7 +99,8 @@ impl HostExecutor {
 	}
 
 	/// Determines if this `HostExecutor` is compatible with the system.
-	pub async fn is_compatible() -> CompatibilityStatus {
+	#[must_use]
+	pub fn is_compatible() -> CompatibilityStatus {
 		// This command expands to: `bash -c "hash bash"`, while this may sound like
 		// beating up a popular breakfast food it is actually a way to determine if
 		// bash is capable of actually executing bash, using nothing but bash itself.
@@ -141,11 +145,11 @@ impl Executor for HostExecutor {
 	#[allow(
 		clippy::cognitive_complexity,
 		clippy::suspicious_else_formatting,
+		clippy::too_many_lines,
 		clippy::unnecessary_unwrap,
 		unused_assignments
 	)]
 	#[must_use]
-	#[tracing::instrument]
 	async fn execute(
 		&self,
 		log_channel: Sender<(String, String, bool)>,
@@ -164,7 +168,7 @@ impl Executor for HostExecutor {
 		info!("Executing task: [{}]", task.get_task_name());
 
 		// Create the pipeline directory.
-		let mut tmp_path = get_tmp_dir().await;
+		let mut tmp_path = get_tmp_dir();
 		tmp_path.push(task.get_pipeline_id().to_owned() + "-dl-host");
 		let res = async_std::fs::create_dir_all(tmp_path.clone()).await;
 		if let Err(dir_err) = res {
@@ -240,41 +244,38 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 		}
 		let mut child = command_res.unwrap();
 
+		let has_finished = Arc::new(AtomicBool::new(false));
+
 		let mut child_stdout = BufReader::new(child.stdout.take().unwrap());
 		let mut child_stderr = BufReader::new(child.stderr.take().unwrap());
 
-		let stdout_channel_clone = log_channel.clone();
-		let stdout_task_name = task.get_task_name().to_owned();
-		let stderr_channel_clone = log_channel.clone();
-		let stderr_task_name = task.get_task_name().to_owned();
+		let flush_channel_clone = log_channel.clone();
+		let flush_task_name = task.get_task_name().to_owned();
+		let flush_has_finished_clone = has_finished.clone();
 
-		let flush_stdout = async_std::task::spawn(async move {
+		let flush_task = async_std::task::spawn(async move {
 			let mut line = String::new();
 
-			while let Ok(read) = child_stdout.read_line(&mut line) {
-				if read == 0 {
-					info!("STDOUT hit EOF!");
-					break;
+			while !flush_has_finished_clone.load(Ordering::Relaxed) {
+				while let Ok(read) = child_stdout.read_line(&mut line) {
+					if read == 0 {
+						break;
+					}
+
+					let _ = flush_channel_clone.send((flush_task_name.clone(), line, false));
+
+					line = String::new();
+				}
+				while let Ok(read) = child_stderr.read_line(&mut line) {
+					if read == 0 {
+						break;
+					}
+
+					let _ = flush_channel_clone.send((flush_task_name.clone(), line, false));
+
+					line = String::new();
 				}
 
-				let _ = stdout_channel_clone.send((stdout_task_name.clone(), line, false));
-
-				line = String::new();
-				async_std::task::sleep(std::time::Duration::from_millis(10)).await;
-			}
-		});
-		let flush_stderr = async_std::task::spawn(async move {
-			let mut line = String::new();
-
-			while let Ok(read) = child_stderr.read_line(&mut line) {
-				if read == 0 {
-					info!("STDERR hit EOF!");
-					break;
-				}
-
-				let _ = stderr_channel_clone.send((stderr_task_name.clone(), line, true));
-
-				line = String::new();
 				async_std::task::sleep(std::time::Duration::from_millis(10)).await;
 			}
 		});
@@ -307,8 +308,8 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 			async_std::task::sleep(std::time::Duration::from_millis(10)).await;
 		}
 
-		flush_stdout.await;
-		flush_stderr.await;
+		has_finished.store(true, Ordering::SeqCst);
+		flush_task.await;
 
 		// Return exit code.
 		rc as isize
@@ -321,14 +322,14 @@ mod unit_tests {
 
 	#[test]
 	fn is_compatible() {
-		let compat = async_std::task::block_on(HostExecutor::is_compatible());
+		let compat = HostExecutor::is_compatible();
 		assert_eq!(compat, CompatibilityStatus::Compatible);
 	}
 
 	#[test]
 	fn meets_requirements() {
-		let he = async_std::task::block_on(HostExecutor::new(PathBuf::from("/tmp/non-existant")))
-			.expect("Should always be able to construct HostExecutor");
+		let pb = PathBuf::from("/tmp/non-existant");
+		let he = HostExecutor::new(&pb).expect("Should always be able to construct HostExecutor");
 
 		assert!(
 			he.meets_requirements(&vec![crate::config::types::NeedsRequirement::new(

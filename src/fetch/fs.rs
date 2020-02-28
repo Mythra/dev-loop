@@ -3,10 +3,9 @@
 use crate::config::types::LocationConf;
 use crate::fetch::{FetchedItem, Fetcher};
 use anyhow::{anyhow, Result};
-use async_std::fs::{canonicalize, File};
-use async_std::path::PathBuf;
-use async_std::prelude::*;
-use std::fs::read_dir;
+use std::fs::{canonicalize, read_dir, File};
+use std::io::Read;
+use std::path::PathBuf;
 use tracing::trace;
 
 /// Handles all fetching based on the 'path' directive.
@@ -48,8 +47,10 @@ pub fn path_is_child_of_parent(parent: &PathBuf, child: &PathBuf) -> bool {
 ///
 /// `dir`: the directory to iterate over.
 /// `should_recurse`: if we should recursively look at this directory.
-#[must_use]
-#[tracing::instrument]
+///
+/// # Errors
+///
+/// If we fail to open up the directory, and iterate over the files.
 pub fn iterate_directory(dir: &PathBuf, should_recurse: bool) -> Result<Vec<PathBuf>> {
 	let mut results = Vec::new();
 
@@ -58,11 +59,10 @@ pub fn iterate_directory(dir: &PathBuf, should_recurse: bool) -> Result<Vec<Path
 		let found_path = entry?.path();
 
 		if found_path.is_dir() && should_recurse {
-			let apb = PathBuf::from(found_path);
-			let new_results = iterate_directory(&apb, should_recurse)?;
+			let new_results = iterate_directory(&found_path, should_recurse)?;
 			results.extend(new_results);
 		} else if found_path.is_file() {
-			results.push(PathBuf::from(found_path));
+			results.push(found_path);
 		} else {
 			trace!(
 				"Skipping directory because not recursing, or non-file: [{:?}]",
@@ -74,12 +74,10 @@ pub fn iterate_directory(dir: &PathBuf, should_recurse: bool) -> Result<Vec<Path
 	Ok(results)
 }
 
-/// Read a particular path as a FetchedItem.
+/// Read a particular path as a `FetchedItem`.
 ///
 /// `file`: The file to attempt to read into a fetched item.
-#[must_use]
-#[tracing::instrument]
-async fn read_path_as_item(file: PathBuf) -> Result<FetchedItem> {
+fn read_path_as_item_blocking(file: &PathBuf) -> Result<FetchedItem> {
 	let as_str = file.to_str();
 	let source_location = if let Some(the_str) = as_str {
 		the_str.to_owned()
@@ -87,9 +85,9 @@ async fn read_path_as_item(file: PathBuf) -> Result<FetchedItem> {
 		"unknown".to_owned()
 	};
 
-	let mut fh = File::open(&file).await?;
+	let mut fh = File::open(&file)?;
 	let mut contents = Vec::new();
-	fh.read_to_end(&mut contents).await?;
+	fh.read_to_end(&mut contents)?;
 
 	Ok(FetchedItem::new(
 		contents,
@@ -125,7 +123,6 @@ impl PathFetcher {
 	/// `location`: the location to fetch from.
 	/// `root_dir`: the root directory to fetch from
 	/// `filter_filename`: the filename to potentially filter by.
-	#[tracing::instrument]
 	async fn internal_fetch(
 		&self,
 		location: &LocationConf,
@@ -149,7 +146,7 @@ impl PathFetcher {
 		// be running in docker or remotely which may always have that tool there.
 		let mut built_path = root_dir.clone();
 		built_path.push(location.get_at());
-		let canonicalized = canonicalize(built_path).await?;
+		let canonicalized = canonicalize(built_path)?;
 		if !path_is_child_of_parent(&self.project_root, &canonicalized) {
 			return Err(anyhow!(
 				"Path: [{:?}] is not a child of project directory: [{:?}], which is required for PathFetcher, so we can ensure it exists everywhere.",
@@ -160,36 +157,24 @@ impl PathFetcher {
 
 		let mut results = Vec::new();
 
-		if canonicalized.is_dir().await {
+		if canonicalized.is_dir() {
 			let path_entries = iterate_directory(&canonicalized, location.get_recurse())?;
 
 			if let Some(ffn) = filter_filename {
-				let mut futures = Vec::new();
-
 				for file_to_read in path_entries {
 					if let Some(utf8_str) = file_to_read.to_str() {
 						if utf8_str.ends_with(&ffn) {
-							futures.push(read_path_as_item(file_to_read));
+							results.push(read_path_as_item_blocking(&file_to_read)?);
 						}
 					}
 				}
-
-				for future in futures {
-					results.push(future.await?);
-				}
 			} else {
-				let mut futures = Vec::new();
-
 				for file_to_read in path_entries {
-					futures.push(read_path_as_item(file_to_read));
-				}
-
-				for future in futures {
-					results.push(future.await?);
+					results.push(read_path_as_item_blocking(&file_to_read)?);
 				}
 			}
-		} else if canonicalized.is_file().await {
-			results.push(read_path_as_item(canonicalized).await?);
+		} else if canonicalized.is_file() {
+			results.push(read_path_as_item_blocking(&canonicalized)?);
 		} else {
 			return Err(anyhow!(
 				"PathFetcher can only fetch file or directory, and the path: [{:?}] is not either.",

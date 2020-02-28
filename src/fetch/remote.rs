@@ -4,8 +4,8 @@ use crate::config::types::LocationConf;
 use crate::fetch::{FetchedItem, Fetcher};
 use anyhow::{anyhow, Result};
 use async_std::future;
-use async_std::path::PathBuf;
 use isahc::prelude::*;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// A fetcher that is capable of fetching from an http like endpoint.
@@ -31,7 +31,6 @@ impl HttpFetcher {
 #[async_trait::async_trait]
 impl Fetcher for HttpFetcher {
 	#[must_use]
-	#[tracing::instrument]
 	async fn fetch(&self, location: &LocationConf) -> Result<Vec<FetchedItem>> {
 		if location.get_type() != "http" {
 			return Err(anyhow!(

@@ -12,7 +12,7 @@ use crate::tasks::execution::preparation::{
 use crate::tasks::fs::ensure_dirs;
 use crate::tasks::TaskGraph;
 use crate::terminal::Term;
-use async_std::path::PathBuf;
+use std::path::PathBuf;
 use tracing::error;
 
 /// Handle the "exec" command provided by dev loop.
@@ -27,8 +27,8 @@ pub async fn handle_exec_command(
 	config: &TopLevelConf,
 	fetcher: &FetcherRepository,
 	terminal: &Term,
-	root_dir: &PathBuf,
 	args: &[String],
+	root_dir: &PathBuf,
 ) -> i32 {
 	// The order of exec:
 	//
@@ -77,7 +77,7 @@ pub async fn handle_exec_command(
 
 	// Before we start preparing a task for execution, let's ensure all the necessary dirs are
 	// created.
-	let ensure_res = ensure_dirs(config, root_dir).await;
+	let ensure_res = ensure_dirs(config, root_dir);
 	if ensure_res.is_err() {
 		return 14;
 	}
@@ -127,6 +127,7 @@ pub async fn handle_exec_command(
 	let rc = execute_tasks_in_parallel(helpers, task_lines, task_size, terminal).await;
 
 	// Don't clean host executor so repro files stay on the FS until they manually run clean.
+	// Clean Docker Executor though so containers come down, and we don't create a mess.
 	crate::executors::docker::DockerExecutor::clean().await;
 
 	rc

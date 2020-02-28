@@ -10,7 +10,7 @@ use crate::tasks::execution::preparation::{build_concurrent_execution_list, fetc
 use crate::tasks::fs::ensure_dirs;
 use crate::tasks::TaskGraph;
 use crate::terminal::Term;
-use async_std::path::PathBuf;
+use std::path::PathBuf;
 use tracing::{error, info};
 
 /// Handle the "run" command provided by dev loop.
@@ -64,7 +64,7 @@ pub async fn handle_run_command(
 
 	// Before we start preparing a task for execution, let's ensure all the necessary dirs are
 	// created.
-	let ensure_res = ensure_dirs(config, root_dir).await;
+	let ensure_res = ensure_dirs(config, root_dir);
 	if ensure_res.is_err() {
 		return 13;
 	}

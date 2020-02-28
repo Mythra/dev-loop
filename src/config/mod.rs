@@ -5,9 +5,9 @@
 //! Those validations happen at different stages within the program.
 
 use anyhow::{anyhow, Result};
-use async_std::fs::{canonicalize, File};
-use async_std::path::PathBuf;
-use async_std::prelude::*;
+use std::fs::{canonicalize, File};
+use std::io::Read;
+use std::path::PathBuf;
 use tracing::{error, trace};
 
 pub mod types;
@@ -17,25 +17,18 @@ pub mod types;
 /// This discovers the project directory automatically by looking at
 /// `std::env::current_dir()`, and walking the path up.
 #[allow(clippy::cognitive_complexity)]
-pub async fn get_project_root() -> Option<PathBuf> {
+#[must_use]
+pub fn get_project_root() -> Option<PathBuf> {
 	// Get the current directory (this is where we start looking...)
 	//
 	// We need the full "canonicalized" directory to ensure we can "pop"
 	// all the way up.
-	let current_dir = std::env::current_dir();
-	if let Err(current_err) = current_dir {
-		error!("Failed to get the current directory: [{:?}]", current_err);
+	let current_dir_res = std::env::current_dir().and_then(canonicalize);
+	if let Err(finding_dir) = current_dir_res {
+		error!("Failed to get the current directory: [{:?}]", finding_dir);
 		return None;
 	}
-	let current_dir = canonicalize(current_dir.unwrap()).await;
-	if let Err(current_err) = current_dir {
-		error!(
-			"Failed to canonicalize the current directory: [{:?}]",
-			current_err
-		);
-		return None;
-	}
-	let mut current_dir = current_dir.unwrap();
+	let mut current_dir = current_dir_res.unwrap();
 
 	// Go ahead, and look for the "dev-loop" directory that we should run
 	// everything from. The "dev-loop" directory is one that has:
@@ -47,7 +40,7 @@ pub async fn get_project_root() -> Option<PathBuf> {
 		let mut config_location = current_dir.clone();
 		config_location.push(".dl/config.yml");
 
-		if !config_location.is_file().await {
+		if !config_location.is_file() {
 			trace!("Path does not have a .dl folder with a config.yml, continuing.");
 			current_dir.pop();
 			continue;
@@ -61,34 +54,26 @@ pub async fn get_project_root() -> Option<PathBuf> {
 }
 
 /// Find and open a file handle the the project level configuration.
-#[tracing::instrument]
-async fn find_and_open_project_config() -> Option<File> {
-	if let Some(mut project_root) = get_project_root().await {
+fn find_and_open_project_config() -> Option<File> {
+	get_project_root().and_then(|mut project_root| {
 		project_root.push(".dl/config.yml");
 		trace!("Opening Config Path: [{:?}]", project_root);
 
-		let file_res = File::open(project_root).await;
-		if let Ok(handle) = file_res {
-			Some(handle)
-		} else {
-			None
-		}
-	} else {
-		None
-	}
+		File::open(project_root).ok()
+	})
 }
 
 /// Attempt to fetch the top level project configuration for this project.
 #[tracing::instrument]
-pub async fn get_top_level_config() -> Result<types::TopLevelConf> {
-	let config_fh = find_and_open_project_config().await;
+pub fn get_top_level_config() -> Result<types::TopLevelConf> {
+	let config_fh = find_and_open_project_config();
 	if config_fh.is_none() {
 		return Err(anyhow!("Failed to find project configuration!"));
 	}
 	let mut config_fh = config_fh.unwrap();
 
 	let mut contents = Vec::new();
-	config_fh.read_to_end(&mut contents).await?;
+	config_fh.read_to_end(&mut contents)?;
 
 	Ok(serde_yaml::from_slice::<types::TopLevelConf>(&contents)?)
 }

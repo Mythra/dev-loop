@@ -49,7 +49,6 @@ use crate::get_tmp_dir;
 use crate::tasks::execution::preparation::ExecutableTask;
 use anyhow::{anyhow, Result};
 use async_std::future;
-use async_std::path::PathBuf;
 use crossbeam_channel::Sender;
 use isahc::config::VersionNegotiation;
 use isahc::prelude::*;
@@ -60,6 +59,7 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::io::prelude::*;
 use std::io::BufReader;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
@@ -140,9 +140,14 @@ impl DockerExecutor {
 	///                       be used by tests, or where a user has explicitly
 	///                       requested a specific socket. We automatically
 	///                       want to use the socket path as much as possible.
+	///
+	/// # Errors
+	///
+	/// The docker executor must have all of it's required arguments passed in
+	/// otherwise it will error on construction.
 	#[allow(unused_assignments, clippy::too_many_lines)]
-	pub async fn new(
-		project_root: PathBuf,
+	pub fn new(
+		project_root: &PathBuf,
 		executor_args: &HashMap<String, String>,
 		provided_conf: &[ProvideConf],
 		override_sock_path: Option<String>,
@@ -151,7 +156,7 @@ impl DockerExecutor {
 		//
 		// We need them as strings more than paths.
 
-		let tmp_dir = get_tmp_dir().await;
+		let tmp_dir = get_tmp_dir();
 		let tmp_dir_as_string = tmp_dir.to_str();
 		if tmp_dir_as_string.is_none() {
 			return Err(anyhow!(
@@ -165,7 +170,6 @@ impl DockerExecutor {
 		let pr_as_string = pr_as_string.unwrap();
 
 		// Next Generate the random name for the container to use that won't clash.
-
 		let random_str = format!("{}", uuid::Uuid::new_v4());
 
 		// Finally parse out all the executor arguments, including the required ones.
@@ -329,7 +333,6 @@ impl DockerExecutor {
 	/// `path`: the path to call (along with Query Args).
 	/// `timeout`: The optional timeout. Defaults to 30 seconds.
 	/// `is_json`: whether or not to parse the response as json.
-	#[tracing::instrument]
 	async fn docker_api_get(
 		client: &HttpClient,
 		path: &str,
@@ -388,7 +391,6 @@ impl DockerExecutor {
 	/// `body`: The body to send to the remote endpoint.
 	/// `timeout`: the optional timeout. Defaults to 30 seconds.
 	/// `is_json`: whether to attempt to read the response body as json.
-	#[tracing::instrument]
 	async fn docker_api_post(
 		client: &HttpClient,
 		path: &str,
@@ -454,7 +456,6 @@ impl DockerExecutor {
 	/// `body`: The body to send to the remote endpoint.
 	/// `timeout`: the timeout for this requests, defaults to 30 seconds.
 	/// `is_json`: whether to actually try to read the response body as json.
-	#[tracing::instrument]
 	async fn docker_api_delete(
 		client: &HttpClient,
 		path: &str,
@@ -515,8 +516,7 @@ impl DockerExecutor {
 	}
 
 	/// Attempt to clean up all resources left behind by the docker executor.
-	#[allow(clippy::cognitive_complexity)]
-	#[tracing::instrument]
+	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub async fn clean() {
 		// Cleanup all things left behind by the docker executor.
 		info!("Performing Cleanup for Docker Executor");
@@ -704,15 +704,6 @@ impl DockerExecutor {
 		Ok(())
 	}
 
-	/// Determine if the particular image exists.
-	pub async fn image_exists(&self) -> bool {
-		let url = format!("/images/{}/json", &self.image);
-
-		Self::docker_api_get(&self.client, &url, None, false)
-			.await
-			.is_ok()
-	}
-
 	/// Download the Image for this docker executor.
 	pub async fn download_image(&self) -> Result<()> {
 		let image_tag_split = self.image.rsplitn(2, ':').collect::<Vec<&str>>();
@@ -757,7 +748,7 @@ impl DockerExecutor {
 
 	/// Creates the container, should only be called when it does not yet exist.
 	pub async fn create_container(&self) -> Result<()> {
-		let tmp_dir = get_tmp_dir().await;
+		let tmp_dir = get_tmp_dir();
 		let tmp_path = tmp_dir.to_str().unwrap();
 
 		let mut mounts = Vec::new();
@@ -902,16 +893,14 @@ impl DockerExecutor {
 		Ok(exit_code_opt.as_i64().unwrap())
 	}
 
-	/// Start the container for this docker executor.
-	pub async fn start_container(&self) -> Result<()> {
-		let url = format!("/containers/{}/start", self.container_name);
-		let _ = Self::docker_api_post(&self.client, &url, None, None, false).await?;
-		Ok(())
-	}
-
 	/// Ensure the docker container exists.
 	pub async fn ensure_docker_container(&self) -> Result<()> {
-		if !self.image_exists().await {
+		let image_exists_url = format!("/images/{}/json", &self.image);
+		let image_exists = Self::docker_api_get(&self.client, &image_exists_url, None, false)
+			.await
+			.is_ok();
+
+		if !image_exists {
 			self.download_image().await?;
 		}
 		let (container_exists, container_running) = self.is_container_created_and_running().await?;
@@ -921,7 +910,8 @@ impl DockerExecutor {
 		}
 
 		if !container_running {
-			self.start_container().await?;
+			let url = format!("/containers/{}/start", self.container_name);
+			let _ = Self::docker_api_post(&self.client, &url, None, None, false).await?;
 		}
 
 		let execution_id = self
@@ -1079,7 +1069,7 @@ impl Executor for DockerExecutor {
 			return 10 as isize;
 		}
 
-		let mut tmp_path = get_tmp_dir().await;
+		let mut tmp_path = get_tmp_dir();
 		let mut tmp_path_in_docker = async_std::path::PathBuf::from("/tmp");
 		tmp_path.push(task.get_pipeline_id().to_owned() + "-dl-host");
 		tmp_path_in_docker.push(task.get_pipeline_id().to_owned() + "-dl-host");
@@ -1202,47 +1192,38 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 
 		let has_finished = Arc::new(AtomicBool::new(false));
 
-		let stdout_channel_clone = log_channel.clone();
-		let stdout_task_name = task.get_task_name().to_owned();
-		let stdout_is_finished_clone = has_finished.clone();
-		let stderr_channel_clone = log_channel.clone();
-		let stderr_task_name = task.get_task_name().to_owned();
-		let stderr_is_finished_clone = has_finished.clone();
+		let flush_channel_clone = log_channel.clone();
+		let flush_task_name = task.get_task_name().to_owned();
+		let flush_is_finished_clone = has_finished.clone();
 
-		let flush_stdout = async_std::task::spawn(async move {
+		let flush_task = async_std::task::spawn(async move {
 			let mut line = String::new();
 			let file = std::fs::File::open(stdout_log_path)
 				.expect("Failed to open log file even though we created it!");
+			let err_file = std::fs::File::open(stderr_log_path)
+				.expect("Failed to open stderr log file even though we created it!");
 			let mut reader = BufReader::new(file);
+			let mut stderr_reader = BufReader::new(err_file);
 
-			while !stdout_is_finished_clone.load(Ordering::Relaxed) {
+			while !flush_is_finished_clone.load(Ordering::Relaxed) {
 				while let Ok(read) = reader.read_line(&mut line) {
 					if read == 0 {
 						break;
 					}
 
-					let _ = stdout_channel_clone.send((stdout_task_name.clone(), line, true));
+					let _ = flush_channel_clone.send((flush_task_name.clone(), line, true));
 					line = String::new();
-					async_std::task::sleep(std::time::Duration::from_millis(10)).await;
 				}
-			}
-		});
-		let flush_stderr = async_std::task::spawn(async move {
-			let mut line = String::new();
-			let file = std::fs::File::open(stderr_log_path)
-				.expect("Failed to open err log file even though we created it!");
-			let mut reader = BufReader::new(file);
-
-			while !stderr_is_finished_clone.load(Ordering::Relaxed) {
-				while let Ok(read) = reader.read_line(&mut line) {
+				while let Ok(read) = stderr_reader.read_line(&mut line) {
 					if read == 0 {
 						break;
 					}
 
-					let _ = stderr_channel_clone.send((stderr_task_name.clone(), line, true));
+					let _ = flush_channel_clone.send((flush_task_name.clone(), line, true));
 					line = String::new();
-					async_std::task::sleep(std::time::Duration::from_millis(10)).await;
 				}
+
+				async_std::task::sleep(std::time::Duration::from_millis(10)).await;
 			}
 		});
 
@@ -1273,8 +1254,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 		}
 
 		has_finished.store(true, Ordering::SeqCst);
-		flush_stdout.await;
-		flush_stderr.await;
+		flush_task.await;
 
 		rc as isize
 	}
@@ -1289,15 +1269,10 @@ mod unit_tests {
 		{
 			let args = HashMap::new();
 			let provided_conf = Vec::new();
+			let pb = PathBuf::from("/tmp/non-existant");
 
 			assert!(
-				async_std::task::block_on(DockerExecutor::new(
-					PathBuf::from("/tmp/non-existant"),
-					&args,
-					&provided_conf,
-					None,
-				))
-				.is_err(),
+				DockerExecutor::new(&pb, &args, &provided_conf, None,).is_err(),
 				"Docker Executor without a name_prefix should error!",
 			);
 		}
@@ -1306,15 +1281,10 @@ mod unit_tests {
 			let mut args = HashMap::new();
 			args.insert("name_prefix".to_owned(), "asdf-".to_owned());
 			let provided_conf = Vec::new();
+			let pb = PathBuf::from("/tmp/non-existant");
 
 			assert!(
-				async_std::task::block_on(DockerExecutor::new(
-					PathBuf::from("/tmp/non-existant"),
-					&args,
-					&provided_conf,
-					None,
-				))
-				.is_err(),
+				DockerExecutor::new(&pb, &args, &provided_conf, None,).is_err(),
 				"Docker executor without an image should error!",
 			);
 		}
@@ -1324,15 +1294,10 @@ mod unit_tests {
 			args.insert("name_prefix".to_owned(), "asdf-".to_owned());
 			args.insert("image".to_owned(), "localhost:5000/blah:latest".to_owned());
 			let provided_conf = Vec::new();
+			let pb = PathBuf::from("/tmp/non-existant");
 
 			assert!(
-				async_std::task::block_on(DockerExecutor::new(
-					PathBuf::from("/tmp/non-existant"),
-					&args,
-					&provided_conf,
-					None,
-				))
-				.is_ok(),
+				DockerExecutor::new(&pb, &args, &provided_conf, None,).is_ok(),
 				"Docker executor with an image/name prefix should succeed!",
 			);
 		}
@@ -1344,13 +1309,10 @@ mod unit_tests {
 		args.insert("name_prefix".to_owned(), "name-prefix-".to_owned());
 		args.insert("image".to_owned(), "localhost:5000/blah:latest".to_owned());
 		let provided_conf = Vec::new();
-		let de = async_std::task::block_on(DockerExecutor::new(
-			PathBuf::from("/tmp/non-existant"),
-			&args,
-			&provided_conf,
-			None,
-		))
-		.expect("Docker Executor in get_name should be able to be constructed!");
+		let pb = PathBuf::from("/tmp/non-existant");
+
+		let de = DockerExecutor::new(&pb, &args, &provided_conf, None)
+			.expect("Docker Executor in get_name should be able to be constructed!");
 
 		assert!(
 			de.get_container_name().starts_with("dl-name-prefix-"),
@@ -1368,14 +1330,10 @@ mod unit_tests {
 			"a-really-random-service".to_owned(),
 			Some("1.0.0".to_owned()),
 		));
+		let pb = PathBuf::from("/tmp/non-existant");
 
-		let de = async_std::task::block_on(DockerExecutor::new(
-			PathBuf::from("/tmp/non-existant"),
-			&args,
-			&provided_conf,
-			None,
-		))
-		.expect("Docker Executor in meets_requirements should be able to be constructed");
+		let de = DockerExecutor::new(&pb, &args, &provided_conf, None)
+			.expect("Docker Executor in meets_requirements should be able to be constructed");
 
 		assert!(
 			de.meets_requirements(&vec![crate::config::types::NeedsRequirement::new(

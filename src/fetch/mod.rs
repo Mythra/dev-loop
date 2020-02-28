@@ -6,9 +6,9 @@
 
 use crate::config::types::LocationConf;
 use anyhow::{anyhow, Result};
-use async_std::path::PathBuf;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Describes the result of a fetch. This is a two part response
@@ -123,7 +123,7 @@ impl FetcherRepository {
 	/// # Errors
 	///
 	/// If creating any of the underlying fetchers fails.
-	pub fn new(project_root: PathBuf) -> Result<Self> {
+	pub fn new(project_root: std::path::PathBuf) -> Result<Self> {
 		let mut fetchers: HashMap<String, Box<dyn Fetcher + Sync + Send>> = HashMap::new();
 
 		let fs_fetcher = fs::PathFetcher::new(project_root)?;

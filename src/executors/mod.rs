@@ -9,11 +9,11 @@ use crate::config::types::{
 use crate::fetch::{Fetcher, FetcherRepository};
 use crate::tasks::execution::preparation::ExecutableTask;
 use anyhow::{anyhow, Result};
-use async_std::path::PathBuf;
 use crossbeam_channel::Sender;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::hash::{BuildHasher, Hasher};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use tracing::{error, info};
@@ -135,7 +135,7 @@ impl ExecutorRepository {
 		// If someone tries to use it will fail, but if they don't it won't impact
 		// their work if someone else breaks it somehow.
 		if let Some(econf) = tlc.get_default_executor() {
-			let exec_res = Self::instantiate_executor(rd, econf, hash_builder.build_hasher()).await;
+			let exec_res = Self::instantiate_executor(rd, econf).await;
 			if let Err(err_exec) = exec_res {
 				error!(
 					"Failed to construct default executor due to: [{:?}]. Will not be choosing.",
@@ -197,9 +197,7 @@ impl ExecutorRepository {
 						.into_iter()
 						.enumerate()
 					{
-						let exec_res =
-							Self::instantiate_executor(rd, &econf, hash_builder.build_hasher())
-								.await;
+						let exec_res = Self::instantiate_executor(rd, &econf).await;
 						if let Err(exec_init_err) = exec_res {
 							error!(
 								"Failed to initialize executor #{} in location: [{}] due to: [{:?}] Will not be choosing.",
@@ -294,12 +292,8 @@ impl ExecutorRepository {
 				"Task: [{}] has specified custom executor... using",
 				task.get_name()
 			);
-			let resulting_executor = Self::instantiate_executor(
-				&self.root_dir,
-				custom_executor_config,
-				hash_builder.build_hasher(),
-			)
-			.await;
+			let resulting_executor =
+				Self::instantiate_executor(&self.root_dir, custom_executor_config).await;
 
 			if let Err(resulting_err) = resulting_executor {
 				error!(
@@ -409,16 +403,14 @@ impl ExecutorRepository {
 	/// `rd`: The root directory for dev-loop.
 	/// `conf`: The configuration for the executor to create.
 	/// `hasher`: used to create unique ids.
-	#[tracing::instrument]
 	async fn instantiate_executor(
 		rd: &PathBuf,
 		conf: &ExecutorConf,
-		hasher: XxHash64,
 	) -> Result<(String, Arc<dyn Executor + Send + Sync>)> {
 		// Help the type checker out.
 		let ret_v: Result<(String, Arc<dyn Executor + Send + Sync>)> = match conf.get_type() {
 			"host" => {
-				let compatibility = host::HostExecutor::is_compatible().await;
+				let compatibility = host::HostExecutor::is_compatible();
 				match compatibility {
 					CompatibilityStatus::Compatible => {}
 					CompatibilityStatus::CouldBeCompatible(how_to_install) => {
@@ -434,7 +426,7 @@ impl ExecutorRepository {
 						));
 					}
 				}
-				let he = host::HostExecutor::new(rd.clone()).await?;
+				let he = host::HostExecutor::new(rd)?;
 				Ok(("host".to_owned(), Arc::new(he)))
 			}
 			"docker" => {
@@ -457,7 +449,7 @@ impl ExecutorRepository {
 
 				let params = conf.get_parameters();
 				let provides = conf.get_provided();
-				let de = docker::DockerExecutor::new(rd.clone(), &params, &provides, None).await?;
+				let de = docker::DockerExecutor::new(rd, &params, &provides, None)?;
 				Ok((de.get_container_name().to_owned(), Arc::new(de)))
 			}
 			_ => Err(anyhow!("Unknown type of executor!")),

@@ -11,12 +11,14 @@ use crate::tasks::execution::preparation::ExecutableTask;
 use crate::terminal::task_indicator::TaskChange;
 use crate::terminal::Term;
 use crossbeam_channel::Sender;
+use std::fs::create_dir_all;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Arc;
 use tracing::{error, info};
 
 /// Execute a particular "line" of tasks.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument]
 async fn execute_task_line(
 	tlid: usize,
 	helpers: Vec<FetchedItem>,
@@ -38,9 +40,9 @@ async fn execute_task_line(
 	//  6. Otherwise keep iterating through the line.
 	//  7. At the end of the line return the rc.
 
-	let mut helper_dir = get_tmp_dir().await;
+	let mut helper_dir = get_tmp_dir();
 	helper_dir.push(format!("tlid-{}-helpers-dl-host/", tlid));
-	let helpers_res = async_std::fs::create_dir_all(helper_dir.clone()).await;
+	let helpers_res = create_dir_all(helper_dir.clone());
 	if let Err(helper_dir_err) = helpers_res {
 		error!(
 			"Failed to create helper directory due to: [{:?}]",
@@ -59,8 +61,7 @@ async fn execute_task_line(
 	for (idx, fetched_helper) in helpers.into_iter().enumerate() {
 		let mut helper_path = helper_dir.clone();
 		helper_path.push(format!("helper-{}.sh", idx));
-		let helper_write_res =
-			async_std::fs::write(helper_path, fetched_helper.get_contents()).await;
+		let helper_write_res = std::fs::write(helper_path, fetched_helper.get_contents());
 		if let Err(write_err) = helper_write_res {
 			error!(
 				"Failed to write helper script to temporary directory due to: [{:?}]",
@@ -127,6 +128,10 @@ pub async fn execute_tasks_in_parallel(
 	let (mut task_indicator, log_sender, task_sender) = terminal.create_task_indicator(task_count);
 
 	for (idx, task_set) in tasks.into_iter().enumerate() {
+		if task_set.is_empty() {
+			continue;
+		}
+
 		let helper_clone = helpers.clone();
 		let cloned_should_stop = should_stop.clone();
 		let cloned_log_sender = log_sender.clone();
