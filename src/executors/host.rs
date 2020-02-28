@@ -271,7 +271,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 						break;
 					}
 
-					let _ = flush_channel_clone.send((flush_task_name.clone(), line, false));
+					let _ = flush_channel_clone.send((flush_task_name.clone(), line, true));
 
 					line = String::new();
 				}

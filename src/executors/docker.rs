@@ -1211,7 +1211,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 						break;
 					}
 
-					let _ = flush_channel_clone.send((flush_task_name.clone(), line, true));
+					let _ = flush_channel_clone.send((flush_task_name.clone(), line, false));
 					line = String::new();
 				}
 				while let Ok(read) = stderr_reader.read_line(&mut line) {

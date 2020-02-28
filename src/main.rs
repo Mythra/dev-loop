@@ -1,5 +1,4 @@
 #![allow(clippy::module_name_repetitions, clippy::result_map_unwrap_or_else)]
-#![type_length_limit = "1372848"]
 
 use lazy_static::*;
 use std::path::PathBuf;
@@ -50,9 +49,8 @@ pub fn get_tmp_dir() -> PathBuf {
 /// The entrypoint to the application.
 ///
 /// Gets called at the beginning, and performs setup.
-#[async_std::main]
 #[tracing::instrument]
-async fn main() {
+fn main() {
 	if let Err(log_err) = log::initialize_crate_logging(None) {
 		panic!("Failed to initialize logger due to: [{:?}]", log_err);
 	}
@@ -111,14 +109,18 @@ async fn main() {
 	let term = terminal::Term::new();
 
 	let exit_code = match action.as_str() {
-		"list" => commands::list::handle_list_command(&tlc, &fetcher, &term, &arguments).await,
-		"exec" => {
+		"list" => async_std::task::block_on(async {
+			commands::list::handle_list_command(&tlc, &fetcher, &term, &arguments).await
+		}),
+		"exec" => async_std::task::block_on(async {
 			commands::exec::handle_exec_command(&tlc, &fetcher, &term, &arguments, &root_dir).await
-		}
-		"run" => {
+		}),
+		"run" => async_std::task::block_on(async {
 			commands::run::handle_run_command(&tlc, &fetcher, &term, &arguments, &root_dir).await
+		}),
+		"clean" => {
+			async_std::task::block_on(async { commands::clean::handle_clean_command().await })
 		}
-		"clean" => commands::clean::handle_clean_command().await,
 		&_ => {
 			error!("The sub-command: [{}] is not known to dev-loop.\n\n\
 							note: Valid commands are: `list` for listing tasks/presets, `exec` to execute a task, `run` to run a preset, and `clean` to cleanup.", action);
