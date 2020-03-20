@@ -11,9 +11,7 @@ static-openssl = ["isahc/static-openssl"]
 
 [dependencies]
 anyhow = "^1.0"
-#TODO(cynthia): go back to upstream once new-scheduler has been merged in
-# async-std = { version = "^1.4", features = ["attributes"] }
-async-std = { git = "https://github.com/async-rs/async-std.git", branch = "new-scheduler", features = ["attributes"] }
+async-std = { version = "^1.5", features = ["attributes"] }
 async-trait = "^0.1"
 atty = "^0.2"
 colored = "^1.9"
