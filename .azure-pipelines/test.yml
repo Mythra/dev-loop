@@ -19,7 +19,7 @@ steps:
 
   - script: |
       mkdir -p ./scratch/
-      (cd ./scratch/ && curl -sSL -o dl https://github.com/SecurityInsanity/dev-loop/releases/download/0.1.0/dl-linux && chmod +x dl)
+      (cd ./scratch/ && curl -sSL -o dl https://sfo2.digitaloceanspaces.com/tmp-kfc-lol/dl-linux && chmod +x dl)
     displayName: Download Dev-Loop
 
   - script: |
@@ -28,3 +28,10 @@ steps:
   - script: |
       ./scratch/dl exec test
     displayName: Test Dev-Loop
+  - script: |
+      ./scratch/dl exec build dl-release
+    displayName: Build Dev-Loop Release
+  - script: |
+      cd ./e2e/
+      DL_COMMAND="../target/dl-release" ./run-all-tests.sh
+    displayName: Validate Dev-Loop Release
