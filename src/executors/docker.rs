@@ -1122,7 +1122,7 @@ impl Executor for DockerExecutor {
 				return 10;
 			}
 		}
-		if cfg!(target_os = "linux") {
+		if cfg!(target_family = "unix") {
 			{
 				use std::os::unix::fs::PermissionsExt;
 				let log_permissions = std::fs::Permissions::from_mode(0o666);
@@ -1170,7 +1170,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 			return 10;
 		}
 
-		if cfg!(target_os = "linux") {
+		if cfg!(target_family = "unix") {
 			use std::os::unix::fs::PermissionsExt;
 			let executable_permissions = std::fs::Permissions::from_mode(0o777);
 
