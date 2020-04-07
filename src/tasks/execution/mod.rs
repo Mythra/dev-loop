@@ -4,25 +4,31 @@
 
 pub mod preparation;
 
-use crate::fetch::FetchedItem;
-use crate::get_tmp_dir;
-use crate::has_ctrlc_been_hit;
-use crate::tasks::execution::preparation::ExecutableTask;
-use crate::terminal::task_indicator::TaskChange;
-use crate::terminal::Term;
+use crate::{
+	fetch::FetchedItem,
+	get_tmp_dir, has_ctrlc_been_hit,
+	tasks::execution::preparation::WorkUnit,
+	terminal::{task_indicator::TaskChange, Term},
+};
+use anyhow::*;
 use crossbeam_channel::Sender;
-use std::fs::create_dir_all;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::Arc;
-use tracing::{error, info};
+use crossbeam_deque::{Stealer, Worker};
+use std::{
+	fs::create_dir_all,
+	sync::{
+		atomic::{AtomicBool, AtomicIsize, Ordering},
+		Arc,
+	},
+	time::{SystemTime, UNIX_EPOCH},
+};
+use tracing::info;
 
 /// Execute a particular "line" of tasks.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument]
 async fn execute_task_line(
-	tlid: usize,
-	helpers: Vec<FetchedItem>,
-	task_line: Vec<ExecutableTask>,
+	src_string: Arc<String>,
+	stealer: Stealer<WorkUnit>,
 	rc: Arc<AtomicIsize>,
 	should_stop: Arc<AtomicBool>,
 	log_channel: Sender<(String, String, bool)>,
@@ -30,26 +36,95 @@ async fn execute_task_line(
 ) {
 	// The order of executing a task line goes like this:
 	//
-	//  1. Write helpers to a temporary diretory, using the task line id as a unique factor.
-	//     We do this, cause we've seen bugs caused by helpers overwriting themselves, and when
-	//     only one "line" is screwed up it's easier to debug which "line" did it.
-	//  2. For each task, send an update over the task channel that it's started.
-	//  3. After each task finishes send an update on the task channel.
-	//  4. Check the rc. If it's not 0, break.
-	//  5. Check should_stop, if we should stop, break.
-	//  6. Otherwise keep iterating through the line.
-	//  7. At the end of the line return the rc.
+	//  1. For each task, send an update over the task channel that it's started.
+	//  2. After each task finishes send an update on the task channel.
+	//  3. Check the rc. If it's not 0, break.
+	//  4. Check should_stop, if we should stop, break.
+	//  5. Otherwise keep iterating through the line.
+	//  6. At the end of the line return the rc.
 
-	let mut helper_dir = get_tmp_dir();
-	helper_dir.push(format!("tlid-{}-helpers-dl-host/", tlid));
-	let helpers_res = create_dir_all(helper_dir.clone());
-	if let Err(helper_dir_err) = helpers_res {
-		error!(
-			"Failed to create helper directory due to: [{:?}]",
-			helper_dir_err
-		);
+	// Incase we hit a stop before we actually started executing.
+	if should_stop.load(Ordering::SeqCst) {
 		rc.store(10, Ordering::SeqCst);
 		return;
+	}
+
+	let mut new_rc = 0;
+	loop {
+		let stolen = stealer.steal();
+		if stolen.is_empty() {
+			break;
+		}
+		if stolen.is_retry() {
+			continue;
+		}
+
+		let work_unit = stolen.success().unwrap();
+		match work_unit {
+			WorkUnit::SingleTask(task) => {
+				let _ = task_channel.send(TaskChange::StartedTask(task.get_task_name().to_owned()));
+				let task_rc = task
+					.get_executor()
+					.execute(
+						log_channel.clone(),
+						should_stop.clone(),
+						&(*src_string),
+						&task,
+					)
+					.await;
+				new_rc = task_rc;
+				let _ =
+					task_channel.send(TaskChange::FinishedTask(task.get_task_name().to_owned()));
+			}
+			WorkUnit::Pipeline(tasks) => {
+				for task in tasks {
+					let _ =
+						task_channel.send(TaskChange::StartedTask(task.get_task_name().to_owned()));
+					let task_rc = task
+						.get_executor()
+						.execute(
+							log_channel.clone(),
+							should_stop.clone(),
+							&(*src_string),
+							&task,
+						)
+						.await;
+					new_rc = task_rc;
+					let _ = task_channel
+						.send(TaskChange::FinishedTask(task.get_task_name().to_owned()));
+
+					if new_rc != 0 {
+						break;
+					}
+				}
+			}
+		}
+
+		if new_rc != 0 {
+			break;
+		}
+	}
+
+	rc.store(new_rc, Ordering::SeqCst);
+}
+
+/// Get the current epoch second count.
+#[must_use]
+fn get_epoch_seconds() -> u64 {
+	SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.expect("Dev-Loop does not support running on a system where time is before unix epoch!")
+		.as_secs()
+}
+
+/// Build the "Source string", or the string to source all the helpers.
+fn build_helpers_source_string(helpers: Vec<FetchedItem>) -> Result<String> {
+	let epoch = get_epoch_seconds();
+	let mut helper_dir = get_tmp_dir();
+	helper_dir.push(format!("{}-helpers-dl-host/", epoch));
+	let helpers_res = create_dir_all(helper_dir.clone());
+	if let Err(helper_dir_err) = helpers_res {
+		return Err(Error::new(helper_dir_err));
 	}
 
 	// We build the string to source all the helper files and copy that around since it's cheaper.
@@ -63,48 +138,20 @@ async fn execute_task_line(
 		helper_path.push(format!("helper-{}.sh", idx));
 		let helper_write_res = std::fs::write(helper_path, fetched_helper.get_contents());
 		if let Err(write_err) = helper_write_res {
-			error!(
-				"Failed to write helper script to temporary directory due to: [{:?}]",
-				write_err
-			);
-			rc.store(10, Ordering::SeqCst);
-			return;
+			return Err(Error::new(write_err));
 		}
 
 		if src_string.is_empty() {
-			src_string = format!(
-				"source /tmp/tlid-{}-helpers-dl-host/helper-{}.sh",
-				tlid, idx
-			);
+			src_string = format!("source /tmp/{}-helpers-dl-host/helper-{}.sh", epoch, idx);
 		} else {
 			src_string += &format!(
-				" && source /tmp/tlid-{}-helpers-dl-host/helper-{}.sh",
-				tlid, idx
+				" && source /tmp/{}-helpers-dl-host/helper-{}.sh",
+				epoch, idx
 			);
 		}
 	}
 
-	// Incase we hit a stop before we actually started executing.
-	if should_stop.load(Ordering::SeqCst) {
-		rc.store(10, Ordering::SeqCst);
-		return;
-	}
-
-	let mut new_rc = 0;
-	for task in task_line {
-		let _ = task_channel.send(TaskChange::StartedTask(task.get_task_name().to_owned()));
-		let task_rc = task
-			.get_executor()
-			.execute(log_channel.clone(), should_stop.clone(), &src_string, &task)
-			.await;
-		new_rc = task_rc;
-		let _ = task_channel.send(TaskChange::FinishedTask(task.get_task_name().to_owned()));
-		if new_rc != 0 {
-			break;
-		}
-	}
-
-	rc.store(new_rc, Ordering::SeqCst);
+	Ok(src_string)
 }
 
 /// Execute a series of tasks in parallel.
@@ -118,34 +165,32 @@ async fn execute_task_line(
 #[allow(clippy::cast_possible_truncation)]
 pub async fn execute_tasks_in_parallel(
 	helpers: Vec<FetchedItem>,
-	tasks: Vec<Vec<ExecutableTask>>,
+	tasks: Worker<WorkUnit>,
 	task_count: usize,
 	terminal: &Term,
-) -> i32 {
+	worker_size: usize,
+) -> Result<i32> {
 	let mut rc_indicators = Vec::new();
 	let should_stop = Arc::new(AtomicBool::new(false));
 
 	let (mut task_indicator, log_sender, task_sender) = terminal.create_task_indicator(task_count);
+	let src_string = build_helpers_source_string(helpers)?;
+	let src_string_ref = Arc::new(src_string);
 
-	for (idx, task_set) in tasks.into_iter().enumerate() {
-		if task_set.is_empty() {
-			continue;
-		}
-
-		let helper_clone = helpers.clone();
+	for _ in 0..worker_size {
+		let cloned_src_string_ref = src_string_ref.clone();
 		let cloned_should_stop = should_stop.clone();
 		let cloned_log_sender = log_sender.clone();
 		let cloned_task_sender = task_sender.clone();
+		let stealer = tasks.stealer();
 
 		let finished_line = Arc::new(AtomicIsize::new(-1));
 		let finished_clone = finished_line.clone();
 
-		info!("Found task line! Spawning Thread.");
 		async_std::task::spawn(async move {
 			execute_task_line(
-				idx,
-				helper_clone,
-				task_set,
+				cloned_src_string_ref,
+				stealer,
 				finished_clone,
 				cloned_should_stop,
 				cloned_log_sender,
@@ -202,5 +247,5 @@ pub async fn execute_tasks_in_parallel(
 
 	task_indicator.stop_and_flush();
 
-	rc
+	Ok(rc)
 }

@@ -6,10 +6,12 @@
 
 use crate::config::types::LocationConf;
 use anyhow::{anyhow, Result};
-use std::collections::HashMap;
-use std::fmt::{Debug, Formatter};
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{
+	collections::HashMap,
+	fmt::{Debug, Formatter},
+	path::PathBuf,
+	sync::Arc,
+};
 
 /// Describes the result of a fetch. This is a two part response
 /// containing the raw bytes it went, and fetched. Then on the other hand it

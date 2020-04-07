@@ -1,15 +1,20 @@
-use crate::config::types::{TaskConf, TopLevelConf};
-use crate::executors::{Executor, ExecutorRepository};
-use crate::fetch::{FetchedItem, Fetcher, FetcherRepository};
+use crate::{
+	config::types::{TaskConf, TopLevelConf},
+	executors::{Executor, ExecutorRepository},
+	fetch::{FetchedItem, Fetcher, FetcherRepository},
+};
 use anyhow::{anyhow, Result};
-use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Formatter};
-use std::future::Future;
-use std::hash::BuildHasher;
-use std::iter::FromIterator;
-use std::path::PathBuf;
-use std::pin::Pin;
-use std::sync::Arc;
+use crossbeam_deque::Worker;
+use std::{
+	collections::{HashMap, HashSet},
+	fmt::{Debug, Formatter},
+	future::Future,
+	hash::BuildHasher,
+	iter::FromIterator,
+	path::PathBuf,
+	pin::Pin,
+	sync::Arc,
+};
 use tracing::{debug, info};
 use uuid::Uuid;
 
@@ -96,6 +101,24 @@ impl ExecutableTask {
 	pub fn get_executor(&self) -> &Arc<dyn Executor + Sync + Send> {
 		&self.chosen_executor
 	}
+}
+
+/// Describes a particular workable unit, this ensures work can be stolen easily
+/// from a single queue.
+pub enum WorkUnit {
+	/// A SingleTask that it's in the work queue.
+	SingleTask(ExecutableTask),
+	/// A Pipeline of tasks, that all need to be worked in a specific order.
+	Pipeline(Vec<ExecutableTask>),
+}
+
+/// Describes a type of work queue. This helps easily build a pipeline of
+/// tasks, and a work queue.
+pub enum WorkQueue<'a> {
+	/// An actual worker.
+	Queue(&'a mut Worker<WorkUnit>),
+	/// A vector of tasks.
+	VecQueue(&'a mut Vec<ExecutableTask>),
 }
 
 /// Turns a command type task into an executable task.
@@ -188,7 +211,7 @@ where
 /// `arguments`: The arguments provided (from wherever) to know how to
 ///              properly traverse oneof's.
 /// `pipeline_id`: the id of this pipeline.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 #[must_use]
 pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 	tasks: &'a HashMap<String, TaskConf, H>,
@@ -198,23 +221,38 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 	root_directory: PathBuf,
 	arguments: &'a [String],
 	pipeline_id: String,
-) -> Pin<Box<dyn 'a + Future<Output = Result<Vec<ExecutableTask>>>>> {
+	work_queue: &'a mut WorkQueue,
+) -> Pin<Box<dyn 'a + Future<Output = Result<usize>>>> {
 	Box::pin(async move {
-		let mut executable_tasks = Vec::new();
+		let mut size = 0;
 
 		match starting_task.get_type() {
 			"command" => {
-				executable_tasks.push(
-					command_to_executable_task(
-						pipeline_id,
-						starting_task,
-						fetcher,
-						executors,
-						root_directory,
-						Vec::from(arguments),
-					)
-					.await?,
-				);
+				match work_queue {
+					WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
+						command_to_executable_task(
+							pipeline_id,
+							starting_task,
+							fetcher,
+							executors,
+							root_directory,
+							Vec::from(arguments),
+						)
+						.await?,
+					)),
+					WorkQueue::VecQueue(vec) => vec.push(
+						command_to_executable_task(
+							pipeline_id,
+							starting_task,
+							fetcher,
+							executors,
+							root_directory,
+							Vec::from(arguments),
+						)
+						.await?,
+					),
+				}
+				size += 1;
 			}
 			"oneof" => {
 				// Parse a `oneof` type into a list of tasks.
@@ -232,7 +270,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 
 				// If someone specified an empty options array, assume it's intentional.
 				if options.is_empty() {
-					return Ok(Vec::new());
+					return Ok(size);
 				}
 				// If it's not an empty set of options we need to know how to choose one of the tasks.
 				if arguments.is_empty() {
@@ -281,31 +319,45 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 				// Now let's add this task to the list of things to run.
 				match task.get_type() {
 					"command" => {
-						executable_tasks.push(
-							command_to_executable_task(
-								pipeline_id,
-								task,
-								fetcher,
-								executors,
-								root_directory,
-								final_args,
-							)
-							.await?,
-						);
+						match work_queue {
+							WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
+								command_to_executable_task(
+									pipeline_id,
+									task,
+									fetcher,
+									executors,
+									root_directory,
+									Vec::from(arguments),
+								)
+								.await?,
+							)),
+							WorkQueue::VecQueue(vec) => vec.push(
+								command_to_executable_task(
+									pipeline_id,
+									task,
+									fetcher,
+									executors,
+									root_directory,
+									Vec::from(arguments),
+								)
+								.await?,
+							),
+						}
+
+						size += 1;
 					}
 					"oneof" | "pipeline" => {
-						executable_tasks.extend(
-							build_ordered_execution_list(
-								tasks,
-								task,
-								fetcher,
-								executors,
-								root_directory,
-								&final_args,
-								pipeline_id,
-							)
-							.await?,
-						);
+						size += build_ordered_execution_list(
+							tasks,
+							task,
+							fetcher,
+							executors,
+							root_directory,
+							&final_args,
+							pipeline_id,
+							work_queue,
+						)
+						.await?;
 					}
 					_ => {
 						return Err(anyhow!("Unknown task type for task: [{}]", task.get_name()));
@@ -329,6 +381,9 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 					my_pid,
 				);
 
+				let mut executable_steps = Vec::new();
+				let mut executable_steps_as_queue = WorkQueue::VecQueue(&mut executable_steps);
+
 				for step in steps {
 					let potential_task = tasks.get(step.get_task_name());
 					if potential_task.is_none() {
@@ -349,46 +404,47 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 
 					match task.get_type() {
 						"command" => {
-							executable_tasks.push(
-								command_to_executable_task(
-									my_pid.clone(),
+							match executable_steps_as_queue {
+								WorkQueue::Queue(_) => unreachable!(),
+								WorkQueue::VecQueue(ref mut vec) => vec.push(
+									command_to_executable_task(
+										my_pid.clone(),
+										task,
+										fetcher,
+										executors,
+										root_directory.clone(),
+										final_args,
+									)
+									.await?,
+								),
+							};
+						}
+						"oneof" | "pipeline" => {
+							if let Some(args) = step.get_args() {
+								build_ordered_execution_list(
+									tasks,
 									task,
 									fetcher,
 									executors,
 									root_directory.clone(),
-									final_args,
+									&args,
+									my_pid.clone(),
+									&mut executable_steps_as_queue,
 								)
-								.await?,
-							);
-						}
-						"oneof" | "pipeline" => {
-							if let Some(args) = step.get_args() {
-								executable_tasks.extend(
-									build_ordered_execution_list(
-										tasks,
-										task,
-										fetcher,
-										executors,
-										root_directory.clone(),
-										&args,
-										my_pid.clone(),
-									)
-									.await?,
-								);
+								.await?;
 							} else {
 								let args = Vec::new();
-								executable_tasks.extend(
-									build_ordered_execution_list(
-										tasks,
-										task,
-										fetcher,
-										executors,
-										root_directory.clone(),
-										&args,
-										my_pid.clone(),
-									)
-									.await?,
-								);
+								build_ordered_execution_list(
+									tasks,
+									task,
+									fetcher,
+									executors,
+									root_directory.clone(),
+									&args,
+									my_pid.clone(),
+									&mut executable_steps_as_queue,
+								)
+								.await?;
 							}
 						}
 						_ => {
@@ -399,6 +455,12 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 						}
 					}
 				}
+
+				size += executable_steps.len();
+				match work_queue {
+					WorkQueue::Queue(queue) => queue.push(WorkUnit::Pipeline(executable_steps)),
+					WorkQueue::VecQueue(vec) => vec.extend(executable_steps),
+				}
 			}
 			_ => {
 				return Err(anyhow!(
@@ -408,7 +470,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 			}
 		}
 
-		Ok(executable_tasks)
+		Ok(size)
 	})
 }
 
@@ -444,13 +506,12 @@ pub fn build_concurrent_execution_list<'a, H: BuildHasher>(
 	fetcher: &'a FetcherRepository,
 	executors: &'a mut ExecutorRepository,
 	root_directory: PathBuf,
-) -> Pin<Box<dyn 'a + Future<Output = Result<Vec<Vec<ExecutableTask>>>>>> {
+	work_queue: &'a mut Worker<WorkUnit>,
+) -> Pin<Box<dyn 'a + Future<Output = Result<usize>>>> {
 	Box::pin(async move {
 		let unique_tags: HashSet<&String> = HashSet::from_iter(tags.iter());
-		let cpu_count = num_cpus::get();
-
-		let mut lanes = Vec::new();
-		let mut current_lane = 0;
+		let mut as_queue = WorkQueue::Queue(work_queue);
+		let mut size = 0;
 
 		for (task_name, task) in tasks {
 			if task.is_internal() {
@@ -462,32 +523,22 @@ pub fn build_concurrent_execution_list<'a, H: BuildHasher>(
 				let uniq_tags_on_task: HashSet<&String> = HashSet::from_iter(tags_on_task.iter());
 				// We had an intersection of some tags.
 				if !has_unique_elements(unique_tags.iter().chain(uniq_tags_on_task.iter())) {
-					if (current_lane as isize) - 1 < (lanes.len() as isize) {
-						lanes.push(Vec::new());
-					}
-
 					// We found a task to run.
-					lanes[current_lane].extend(
-						build_ordered_execution_list(
-							tasks,
-							task,
-							fetcher,
-							executors,
-							root_directory.clone(),
-							&Vec::new(),
-							new_pipeline_id(),
-						)
-						.await?,
-					);
-
-					current_lane += 1;
-					if current_lane >= cpu_count {
-						current_lane = 0;
-					}
+					size += build_ordered_execution_list(
+						tasks,
+						task,
+						fetcher,
+						executors,
+						root_directory.clone(),
+						&Vec::new(),
+						new_pipeline_id(),
+						&mut as_queue,
+					)
+					.await?;
 				}
 			}
 		}
 
-		Ok(lanes)
+		Ok(size)
 	})
 }

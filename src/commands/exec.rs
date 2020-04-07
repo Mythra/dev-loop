@@ -2,16 +2,23 @@
 //! a single task, and exits. This is the command we expect to be run one of the
 //! most times, perhaps the only thing that comes close is list.
 
-use crate::config::types::TopLevelConf;
-use crate::executors::ExecutorRepository;
-use crate::fetch::FetcherRepository;
-use crate::tasks::execution::execute_tasks_in_parallel;
-use crate::tasks::execution::preparation::{
-	build_ordered_execution_list, fetch_helpers, new_pipeline_id,
+use crate::{
+	config::types::TopLevelConf,
+	executors::ExecutorRepository,
+	fetch::FetcherRepository,
+	tasks::{
+		execution::{
+			execute_tasks_in_parallel,
+			preparation::{
+				build_ordered_execution_list, fetch_helpers, new_pipeline_id, WorkQueue,
+			},
+		},
+		fs::ensure_dirs,
+		TaskGraph,
+	},
+	terminal::Term,
 };
-use crate::tasks::fs::ensure_dirs;
-use crate::tasks::TaskGraph;
-use crate::terminal::Term;
+use crossbeam_deque::Worker;
 use std::path::PathBuf;
 use tracing::error;
 
@@ -95,22 +102,27 @@ pub async fn handle_exec_command(
 
 	// Generate the task execution order.
 	let pid = new_pipeline_id();
-	let execution_list_res = build_ordered_execution_list(
-		&tasks,
-		selected_task,
-		fetcher,
-		&mut erepo,
-		root_dir.clone(),
-		&args[1..],
-		pid,
-	)
-	.await;
-	if let Err(ele) = execution_list_res {
-		error!("Failed to generate a list of tasks to execute: [{:?}]", ele);
-		return 16;
+	let mut worker = Worker::new_fifo();
+	let task_size;
+	{
+		let mut worker_as_queue = WorkQueue::Queue(&mut worker);
+		let execution_list_res = build_ordered_execution_list(
+			&tasks,
+			selected_task,
+			fetcher,
+			&mut erepo,
+			root_dir.clone(),
+			&args[1..],
+			pid,
+			&mut worker_as_queue,
+		)
+		.await;
+		if let Err(ele) = execution_list_res {
+			error!("Failed to generate a list of tasks to execute: [{:?}]", ele);
+			return 16;
+		}
+		task_size = execution_list_res.unwrap();
 	}
-	let execution_list = execution_list_res.unwrap();
-	let task_size = execution_list.len();
 
 	// Finally fetch all the helpers...
 	let helpers_res = fetch_helpers(config, fetcher).await;
@@ -120,15 +132,16 @@ pub async fn handle_exec_command(
 	}
 	let helpers = helpers_res.unwrap();
 
-	// For exec execute all on one thread.
-	let mut task_lines = Vec::new();
-	task_lines.push(execution_list);
+	let rc_res = execute_tasks_in_parallel(helpers, worker, task_size, terminal, 1).await;
 
-	let rc = execute_tasks_in_parallel(helpers, task_lines, task_size, terminal).await;
-
-	// Don't clean host executor so repro files stay on the FS until they manually run clean.
-	// Clean Docker Executor though so containers come down, and we don't create a mess.
-	crate::executors::docker::DockerExecutor::clean().await;
-
-	rc
+	match rc_res {
+		Ok(rc) => {
+			crate::executors::docker::DockerExecutor::clean().await;
+			rc
+		}
+		Err(err_code) => {
+			error!("Failed to execute tasks in parallel: [{:?}]", err_code);
+			10
+		}
+	}
 }

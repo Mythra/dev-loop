@@ -1,9 +1,13 @@
 #![allow(clippy::module_name_repetitions, clippy::result_map_unwrap_or_else)]
 
 use lazy_static::*;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::{
+	path::PathBuf,
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		Arc,
+	},
+};
 use tracing::error;
 
 lazy_static! {

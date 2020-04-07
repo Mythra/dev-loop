@@ -43,25 +43,28 @@
 //! when it's not supposed to be you can use the `clean` command. The clean
 //! command will automatically remove all resources associated with `dev-loop`.
 
-use crate::config::types::{NeedsRequirement, ProvideConf};
-use crate::executors::{CompatibilityStatus, Executor};
-use crate::get_tmp_dir;
-use crate::tasks::execution::preparation::ExecutableTask;
+use crate::{
+	config::types::{NeedsRequirement, ProvideConf},
+	executors::{CompatibilityStatus, Executor},
+	get_tmp_dir,
+	tasks::execution::preparation::ExecutableTask,
+};
 use anyhow::{anyhow, Result};
 use async_std::future;
 use crossbeam_channel::Sender;
-use isahc::config::VersionNegotiation;
-use isahc::prelude::*;
-use isahc::{HttpClient, HttpClientBuilder};
+use isahc::{config::VersionNegotiation, prelude::*, HttpClient, HttpClientBuilder};
 use once_cell::sync::Lazy;
 use semver::{Version, VersionReq};
 use serde_json::Value as JsonValue;
-use std::collections::HashMap;
-use std::io::prelude::*;
-use std::io::BufReader;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::{
+	collections::HashMap,
+	io::{prelude::*, BufReader},
+	path::PathBuf,
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		Arc,
+	},
+};
 use tracing::{debug, error, info, warn};
 
 /// This is the api version we use for talking to the docker socket.

@@ -2,8 +2,10 @@
 //!
 //! Everything from the "DAG" of tasks, to running a specific task, etc.
 
-use crate::config::types::{TaskConf, TaskConfFile, TopLevelConf};
-use crate::fetch::{Fetcher, FetcherRepository};
+use crate::{
+	config::types::{TaskConf, TaskConfFile, TopLevelConf},
+	fetch::{Fetcher, FetcherRepository},
+};
 use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 use tracing::error;

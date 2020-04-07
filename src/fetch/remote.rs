@@ -1,12 +1,13 @@
 //! Contains any fetchers that can fetch content from any remote web server.
 
-use crate::config::types::LocationConf;
-use crate::fetch::{FetchedItem, Fetcher};
+use crate::{
+	config::types::LocationConf,
+	fetch::{FetchedItem, Fetcher},
+};
 use anyhow::{anyhow, Result};
 use async_std::future;
 use isahc::prelude::*;
-use std::path::PathBuf;
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
 /// A fetcher that is capable of fetching from an http like endpoint.
 #[derive(Debug)]

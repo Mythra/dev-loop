@@ -6,10 +6,12 @@
 //! is meant for user facing consumption only. We don't really expect something
 //! without a TTY to use the list command.
 
-use crate::config::types::{OneofOption, TaskConf, TopLevelConf};
-use crate::fetch::FetcherRepository;
-use crate::tasks::TaskGraph;
-use crate::terminal::Term;
+use crate::{
+	config::types::{OneofOption, TaskConf, TopLevelConf},
+	fetch::FetcherRepository,
+	tasks::TaskGraph,
+	terminal::Term,
+};
 use std::collections::HashMap;
 use tracing::error;
 

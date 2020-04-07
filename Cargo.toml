@@ -16,6 +16,7 @@ async-trait = "^0.1"
 atty = "^0.2"
 colored = "^1.9"
 crossbeam-channel = "^0.4"
+crossbeam-deque = "^0.7"
 cfg-if = "^0.1"
 ctrlc = "^3.1"
 # TODO(cynthia): go back to upstream once unix socket support is merged in.

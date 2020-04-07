@@ -2,8 +2,7 @@
 
 use crate::config::types::TopLevelConf;
 use anyhow::{anyhow, Result};
-use std::fs::create_dir_all;
-use std::path::PathBuf;
+use std::{fs::create_dir_all, path::PathBuf};
 use tracing::error;
 
 /// Ensure all the directories exist for a task that need to exist.

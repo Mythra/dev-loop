@@ -5,9 +5,11 @@
 //! Those validations happen at different stages within the program.
 
 use anyhow::{anyhow, Result};
-use std::fs::{canonicalize, File};
-use std::io::Read;
-use std::path::PathBuf;
+use std::{
+	fs::{canonicalize, File},
+	io::Read,
+	path::PathBuf,
+};
 use tracing::{error, trace};
 
 pub mod types;

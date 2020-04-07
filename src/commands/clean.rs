@@ -3,8 +3,7 @@
 //! circumstances where we like powered off while running. However, it should
 //! always be safe to run.
 
-use crate::executors::docker::DockerExecutor;
-use crate::executors::host::HostExecutor;
+use crate::executors::{docker::DockerExecutor, host::HostExecutor};
 
 #[tracing::instrument]
 pub async fn handle_clean_command() -> i32 {

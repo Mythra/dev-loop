@@ -1,19 +1,27 @@
 //! Contains the code for the "Host" executor, or the executor
 //! that just uses the Host System.
 
-use crate::config::types::NeedsRequirement;
-use crate::executors::{CompatibilityStatus, Executor};
-use crate::get_tmp_dir;
-use crate::tasks::execution::preparation::ExecutableTask;
+use crate::{
+	config::types::NeedsRequirement,
+	executors::{CompatibilityStatus, Executor},
+	get_tmp_dir,
+	tasks::execution::preparation::ExecutableTask,
+};
 use anyhow::{anyhow, Result};
-use async_std::fs::{read_dir, remove_dir_all};
-use async_std::prelude::*;
+use async_std::{
+	fs::{read_dir, remove_dir_all},
+	prelude::*,
+};
 use crossbeam_channel::Sender;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::{
+	io::{BufRead, BufReader},
+	path::PathBuf,
+	process::{Command, Stdio},
+	sync::{
+		atomic::{AtomicBool, Ordering},
+		Arc,
+	},
+};
 use tracing::{debug, error, info};
 
 /// Represents the actual executor for the host system.
@@ -21,8 +29,6 @@ use tracing::{debug, error, info};
 pub struct HostExecutor {
 	/// The root of the project, so we know where to "cd" into.
 	project_root: String,
-	/// The temporary directory to use.
-	tmp_dir: PathBuf,
 }
 
 impl HostExecutor {
@@ -32,7 +38,6 @@ impl HostExecutor {
 	///
 	/// If the project root is not on a valid utf-8 string path.
 	pub fn new(project_root: &PathBuf) -> Result<Self> {
-		let tmp_dir = get_tmp_dir();
 		let pr_as_string = project_root.to_str();
 		if pr_as_string.is_none() {
 			return Err(anyhow!("Failed to turn project root into a utf-8 string!"));
@@ -40,7 +45,6 @@ impl HostExecutor {
 
 		Ok(Self {
 			project_root: pr_as_string.unwrap().to_owned(),
-			tmp_dir,
 		})
 	}
 

@@ -2,14 +2,21 @@
 //! a series of tasks in parallel so that way you can parralelize a series
 //! of tasks at once.
 
-use crate::config::types::TopLevelConf;
-use crate::executors::ExecutorRepository;
-use crate::fetch::FetcherRepository;
-use crate::tasks::execution::execute_tasks_in_parallel;
-use crate::tasks::execution::preparation::{build_concurrent_execution_list, fetch_helpers};
-use crate::tasks::fs::ensure_dirs;
-use crate::tasks::TaskGraph;
-use crate::terminal::Term;
+use crate::{
+	config::types::TopLevelConf,
+	executors::ExecutorRepository,
+	fetch::FetcherRepository,
+	tasks::{
+		execution::{
+			execute_tasks_in_parallel,
+			preparation::{build_concurrent_execution_list, fetch_helpers},
+		},
+		fs::ensure_dirs,
+		TaskGraph,
+	},
+	terminal::Term,
+};
+use crossbeam_deque::Worker;
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -81,8 +88,16 @@ pub async fn handle_run_command(
 	let mut erepo = erepo_res.unwrap();
 
 	// Let's build a list of tasks to execute.
-	let execution_lanes_res =
-		build_concurrent_execution_list(&tasks, &tags, fetcher, &mut erepo, root_dir.clone()).await;
+	let mut worker = Worker::new_fifo();
+	let execution_lanes_res = build_concurrent_execution_list(
+		&tasks,
+		&tags,
+		fetcher,
+		&mut erepo,
+		root_dir.clone(),
+		&mut worker,
+	)
+	.await;
 	if let Err(execution_lane_err) = execution_lanes_res {
 		error!(
 			"Failed to generate a list of tasks to execute: [{:?}]",
@@ -90,11 +105,7 @@ pub async fn handle_run_command(
 		);
 		return 15;
 	}
-	let lanes = execution_lanes_res.unwrap();
-	let mut task_size = 0;
-	for lane in &lanes {
-		task_size += lane.len();
-	}
+	let task_size = execution_lanes_res.unwrap();
 
 	// Let's fetch all the helpers.
 	let helpers_res = fetch_helpers(config, fetcher).await;
@@ -103,10 +114,23 @@ pub async fn handle_run_command(
 		return 16;
 	}
 	let helpers = helpers_res.unwrap();
-	let rc = execute_tasks_in_parallel(helpers, lanes, task_size, terminal).await;
+	let rc_res = execute_tasks_in_parallel(
+		helpers,
+		worker,
+		task_size,
+		terminal,
+		num_cpus::get_physical(),
+	)
+	.await;
 
-	// Don't clean host executor so repro files stay on the FS until they manually run clean.
-	crate::executors::docker::DockerExecutor::clean().await;
-
-	rc
+	match rc_res {
+		Ok(rc) => {
+			crate::executors::docker::DockerExecutor::clean().await;
+			rc
+		}
+		Err(err_code) => {
+			error!("Failed to execute tasks in parallel: [{:?}]", err_code);
+			10
+		}
+	}
 }

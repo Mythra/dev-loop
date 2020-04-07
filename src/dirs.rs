@@ -1,6 +1,10 @@
-use std::ffi::{CStr, OsString};
-use std::path::PathBuf;
-use std::{env, mem, ptr};
+use std::{
+	env,
+	ffi::{CStr, OsString},
+	mem,
+	path::PathBuf,
+	ptr,
+};
 
 cfg_if::cfg_if! {
   if #[cfg(unix)] {

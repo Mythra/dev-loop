@@ -3,22 +3,22 @@
 //! managing the the lifecycle of anything it creates. For example if using
 //! a docker executor the code that spins up/down the container will be here.
 
-use crate::config::types::{
-	ExecutorConf, ExecutorConfFile, NeedsRequirement, TaskConf, TopLevelConf,
+use crate::{
+	config::types::{ExecutorConf, ExecutorConfFile, NeedsRequirement, TaskConf, TopLevelConf},
+	fetch::{Fetcher, FetcherRepository},
+	tasks::execution::preparation::ExecutableTask,
 };
-use crate::fetch::{Fetcher, FetcherRepository};
-use crate::tasks::execution::preparation::ExecutableTask;
 use anyhow::{anyhow, Result};
 use crossbeam_channel::Sender;
-use std::collections::{HashMap, HashSet};
-use std::fmt::{Debug, Formatter};
-use std::hash::{BuildHasher, Hasher};
-use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, RwLock};
+use std::{
+	collections::{HashMap, HashSet},
+	fmt::{Debug, Formatter},
+	hash::{BuildHasher, Hasher},
+	path::PathBuf,
+	sync::{atomic::AtomicBool, Arc, RwLock},
+};
 use tracing::{error, info};
-use twox_hash::RandomXxHashBuilder64;
-use twox_hash::XxHash64;
+use twox_hash::{RandomXxHashBuilder64, XxHash64};
 
 /// Describes the compatibility status of a particular Executor.
 #[derive(Debug, PartialEq)]

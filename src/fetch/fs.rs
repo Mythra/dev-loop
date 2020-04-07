@@ -1,11 +1,15 @@
 //! Contains any fetchers that can fetch content from the filesystem.
 
-use crate::config::types::LocationConf;
-use crate::fetch::{FetchedItem, Fetcher};
+use crate::{
+	config::types::LocationConf,
+	fetch::{FetchedItem, Fetcher},
+};
 use anyhow::{anyhow, Result};
-use std::fs::{canonicalize, read_dir, File};
-use std::io::Read;
-use std::path::PathBuf;
+use std::{
+	fs::{canonicalize, read_dir, File},
+	io::Read,
+	path::PathBuf,
+};
 use tracing::trace;
 
 /// Handles all fetching based on the 'path' directive.
