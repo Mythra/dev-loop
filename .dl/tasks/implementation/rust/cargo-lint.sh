@@ -3,6 +3,7 @@
 set -e
 
 ensureBinaryExists "cargo"
+ensureRustToolchainConfig
 
 echo "Linting with cargo fmt..."
 cargo fmt --all -- --check

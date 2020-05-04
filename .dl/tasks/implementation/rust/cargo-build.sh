@@ -3,6 +3,7 @@
 set -e
 
 ensureBinaryExists "cargo"
+ensureRustToolchainConfig
 
 if [[ "$1" != "release" ]]; then
   echo "Building Project"
