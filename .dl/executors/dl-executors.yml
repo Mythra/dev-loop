@@ -5,7 +5,7 @@ executors:
     params:
       export_env: 'RUST_BACKTRACE'
       extra_mounts: 'scratch/rust-git-cache/:/root/.cargo/git/,scratch/rust-registry-cache/:/root/.cargo/registry/'
-      image: 'clux/muslrust:1.41.0-stable'
+      image: 'clux/muslrust:1.42.0-stable'
       name_prefix: 'rustc-musl-'
     provides:
       - name: bash
