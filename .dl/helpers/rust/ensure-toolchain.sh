@@ -9,4 +9,8 @@ target = \"x86_64-unknown-linux-musl\"
 
 [target.armv7-unknown-linux-musleabihf]
 linker = \"arm-linux-gnueabihf-gcc\"" > $HOME/.cargo/config
+  rustup toolchain list >/dev/null 2>&1 || {
+    rustup default stable
+    rustup target add x86_64-unknown-linux-musl
+  }
 }

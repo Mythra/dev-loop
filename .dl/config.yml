@@ -16,6 +16,7 @@ ensure_directories:
   - scratch/
   - scratch/rust-git-cache/
   - scratch/rust-registry-cache/
+  - scratch/rustup-cache/
 
 presets:
   - name: ci
