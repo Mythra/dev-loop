@@ -172,7 +172,7 @@ async fn command_to_executable_task(
 			task.get_name()
 		));
 	}
-	let resulting_item = resulting_items.into_iter().nth(0).unwrap();
+	let resulting_item = resulting_items.into_iter().next().unwrap();
 
 	Ok(ExecutableTask::new(
 		args,
@@ -284,8 +284,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 				// The other arguments are dropped on purpose.
 				let potential_option = options
 					.iter()
-					.filter(|option| option.get_name() == arguments[0])
-					.nth(0);
+					.find(|option| option.get_name() == arguments[0]);
 				if potential_option.is_none() {
 					return Err(anyhow!(
 						"The Task: [{}] does  not have a sub-task of: [{}]",
@@ -327,7 +326,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 									fetcher,
 									executors,
 									root_directory,
-									Vec::from(arguments),
+									final_args,
 								)
 								.await?,
 							)),
@@ -338,7 +337,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 									fetcher,
 									executors,
 									root_directory,
-									Vec::from(arguments),
+									final_args,
 								)
 								.await?,
 							),
@@ -478,6 +477,10 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 ///
 /// `tlc`: The top level config.
 /// `fr`: The fetcher repository.
+///
+/// # Errors
+///
+/// If there was an error downloading the helpers.
 pub async fn fetch_helpers(tlc: &TopLevelConf, fr: &FetcherRepository) -> Result<Vec<FetchedItem>> {
 	if let Some(helper_locations) = tlc.get_helper_locations() {
 		let mut fetched_items = Vec::new();

@@ -19,12 +19,13 @@ steps:
 
   - script: |
       mkdir -p ./scratch/
-      (cd ./scratch/ && curl -sSL -o dl https://github.com/SecurityInsanity/dev-loop/releases/download/0.1.1/dl-linux && chmod +x dl)
+      (cd ./scratch/ && curl -sSL -o dl https://dev-loop-builds.sfo2.digitaloceanspaces.com/latest/dl-linux && chmod +x dl)
     displayName: Download Dev-Loop
 
   - script: |
       ./scratch/dl exec build dl-release
     displayName: Build Dev-Loop Release
+
   - script: |
       cd ./e2e/
       DL_COMMAND="../target/dl-release" ./run-all-tests.sh
@@ -35,3 +36,8 @@ steps:
       path: $(System.DefaultWorkingDirectory)/target/dl-release
       artifact: dl-linux
     displayName: Publish Dev-Loop Release
+
+  - script: |
+      sudo apt-get update && sudo apt-get -y install s3cmd
+      ./target/dl-release exec ci-only upload-to-spaces-linux
+    displayName: Publish to Digital Ocean Spaces

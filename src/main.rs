@@ -1,4 +1,8 @@
-#![allow(clippy::module_name_repetitions, clippy::result_map_unwrap_or_else)]
+#![allow(
+	clippy::module_name_repetitions,
+	clippy::result_map_unwrap_or_else,
+	clippy::wildcard_imports
+)]
 
 use lazy_static::*;
 use std::{
@@ -55,7 +59,7 @@ pub fn get_tmp_dir() -> PathBuf {
 /// Gets called at the beginning, and performs setup.
 #[tracing::instrument]
 fn main() {
-	if let Err(log_err) = log::initialize_crate_logging(None) {
+	if let Err(log_err) = log::initialize_crate_logging() {
 		panic!("Failed to initialize logger due to: [{:?}]", log_err);
 	}
 	let r = RUNNING.clone();

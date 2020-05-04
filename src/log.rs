@@ -1,7 +1,6 @@
 //! Handles any logging utilities that we need in our crate for dev-loop.
 
 use anyhow::Result;
-use std::env::var as env_var;
 use tracing::subscriber;
 use tracing_log::LogTracer;
 use tracing_subscriber::{EnvFilter, FmtSubscriber};
@@ -16,20 +15,14 @@ enum Format {
 
 /// Initialize the logging for this crate. Should be called at startup.
 ///
-/// `format` - force a specific format. if `None`, falls back to:
-///            `RUST_LOG_FORMAT`.
-///
 /// # Errors
 ///
 /// If we fail to initialize the log tracer.
-pub fn initialize_crate_logging(format: Option<String>) -> Result<()> {
+pub fn initialize_crate_logging() -> Result<()> {
 	LogTracer::builder().ignore_crate("async_std").init()?;
 
-	let chosen_format = match format
-		.unwrap_or_else(|| env_var("RUST_LOG_FORMAT").unwrap_or_else(|_| "".to_owned()))
-	{
-		_ => Format::Text,
-	};
+	// TODO(cynthia): multiple RUST_LOG_FORMAT.
+	let chosen_format = Format::Text;
 
 	match chosen_format {
 		Format::Text => {
@@ -53,7 +46,7 @@ mod tests {
 	/// `initialize_crate_logging()` should always pass on a supported platform.
 	#[test]
 	fn can_get_home_directory() {
-		let logging = initialize_crate_logging(None);
+		let logging = initialize_crate_logging();
 		assert!(logging.is_ok());
 	}
 }

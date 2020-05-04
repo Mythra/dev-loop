@@ -12,6 +12,10 @@ tasks:
         task: nested-oneof-pt1
         args:
           - option
+      - name: oneof-passes-args
+        task: oneof-passes-args
+        args:
+          - script
       - name: reuse-container
         task: reuse-container-pipeline
       - name: nested-pipelines
