@@ -123,6 +123,10 @@ pub struct DockerExecutor {
 	provides: HashMap<String, Option<Version>>,
 	/// A random string used for various unique identifiers.
 	random_str: String,
+	/// The group id to run as.
+	run_as_group_id: u32,
+	/// The user id to run as.
+	run_as_user_id: u32,
 	/// The list of ports to export (for tcp).
 	tcp_ports_to_expose: Vec<u32>,
 	/// The temporary directory of the host represented as a string.
@@ -192,6 +196,16 @@ impl DockerExecutor {
 			return Err(anyhow!(
 				"Docker Executor requires an `image` to know which docker image to use."
 			));
+		}
+
+		let mut group_id = 0;
+		let mut user_id = 0;
+		if let Some(permission_helper_active) = executor_args.get("experimental_permission_helper")
+		{
+			if permission_helper_active == "true" {
+				user_id = users::get_effective_uid();
+				group_id = users::get_effective_gid();
+			}
 		}
 
 		let mut env_vars = Vec::new();
@@ -323,6 +337,8 @@ impl DockerExecutor {
 			project_root: pr_as_string.to_owned(),
 			provides,
 			random_str,
+			run_as_group_id: group_id,
+			run_as_user_id: user_id,
 			tcp_ports_to_expose,
 			tmp_dir: tmp_dir_as_string.unwrap().to_owned(),
 			udp_ports_to_expose,
@@ -693,6 +709,10 @@ impl DockerExecutor {
 	///
 	/// `client`: the http client.
 	/// `pipeline_id`: the pipeline id for the task.
+	///
+	/// # Errors
+	///
+	/// If we cannot talk to the docker socket, or there is an error creating the network.
 	pub async fn ensure_network_exists(client: &HttpClient, pipeline_id: &str) -> Result<()> {
 		let network_id = format!("dl-{}", pipeline_id);
 		let network_url = format!("/networks/{}", network_id);
@@ -708,6 +728,10 @@ impl DockerExecutor {
 	}
 
 	/// Download the Image for this docker executor.
+	///
+	/// # Errors
+	///
+	/// Errors when it the docker api cannot be talked too, or the image cannot be downloaded.
 	pub async fn download_image(&self) -> Result<()> {
 		let image_tag_split = self.image.rsplitn(2, ':').collect::<Vec<&str>>();
 		let (image_name, tag_name) = if image_tag_split.len() == 2 {
@@ -733,6 +757,10 @@ impl DockerExecutor {
 	}
 
 	/// Determine if the container is created, and then if it's wondering.
+	///
+	/// # Errors
+	///
+	/// Errors when the docker api cannot be talked to.
 	pub async fn is_container_created_and_running(&self) -> Result<(bool, bool)> {
 		let url = format!("/containers/{}/json?size=false", &self.container_name);
 		let mut is_created = false;
@@ -750,6 +778,11 @@ impl DockerExecutor {
 	}
 
 	/// Creates the container, should only be called when it does not yet exist.
+	///
+	/// # Errors
+	///
+	/// Errors when the docker socket cannot be talked too, or there is a conflict
+	/// creating the container.
 	pub async fn create_container(&self) -> Result<()> {
 		let tmp_dir = get_tmp_dir();
 		let tmp_path = tmp_dir.to_str().unwrap();
@@ -825,17 +858,34 @@ impl DockerExecutor {
 	/// Execute a raw command, returning the "execution id" to check back in on it.
 	///
 	/// `command`: the command to execute.
-	pub async fn raw_execute(&self, command: &[String]) -> Result<String> {
+	/// `use_user_ids`: if to use the setup user ids (always true during non-setup).
+	///
+	/// # Errors
+	///
+	/// Errors if we fail to create an exec instance with docker.
+	pub async fn raw_execute(&self, command: &[String], use_user_ids: bool) -> Result<String> {
 		let url = format!("/containers/{}/exec", &self.container_name);
-		let body = serde_json::json!({
-			"AttachStdout": true,
-			"AttachStderr": true,
-			"Tty": false,
-			"User": &self.user,
-			"Privileged": true,
-			"Cmd": command,
-			"Env": &self.environment_to_export,
-		});
+		let body = if use_user_ids && (self.run_as_user_id != 0 || self.run_as_group_id != 0) {
+			serde_json::json!({
+				"AttachStdout": true,
+				"AttachStderr": true,
+				"Tty": false,
+				"User": &format!("{}:{}", self.run_as_user_id, self.run_as_group_id),
+				"Privileged": true,
+				"Cmd": command,
+				"Env": &self.environment_to_export,
+			})
+		} else {
+			serde_json::json!({
+				"AttachStdout": true,
+				"AttachStderr": true,
+				"Tty": false,
+				"User": &self.user,
+				"Privileged": true,
+				"Cmd": command,
+				"Env": &self.environment_to_export,
+			})
+		};
 
 		let resp = Self::docker_api_post(&self.client, &url, Some(body), None, true).await?;
 		let potential_id = &resp["Id"];
@@ -857,6 +907,32 @@ impl DockerExecutor {
 			Self::docker_api_post(&self.client, &start_url, Some(start_body), None, false).await?;
 
 		Ok(exec_id)
+	}
+
+	/// Execute a raw command, and wait til it's finished. Returns execution id so you can checkup on it.
+	///
+	/// `command`: the command to execute.
+	/// `use_user_ids`: if to use the setup user ids (always true during non-setup).
+	///
+	/// # Errors
+	///
+	/// Errors if we cannot talk to docker to create an exec instance.
+	pub async fn raw_execute_and_wait(
+		&self,
+		command: &[String],
+		use_user_ids: bool,
+	) -> Result<String> {
+		let execution_id = self.raw_execute(command, use_user_ids).await?;
+
+		loop {
+			if Self::has_execution_finished(&self.client, &execution_id).await {
+				break;
+			}
+
+			async_std::task::sleep(std::time::Duration::from_micros(10)).await;
+		}
+
+		Ok(execution_id)
 	}
 
 	/// Determine if a particular execution ID has finished executing.
@@ -882,6 +958,10 @@ impl DockerExecutor {
 	///
 	/// `client`: the HTTP Client to talk to the docker engine api.
 	/// `execution_id`: the execution id.
+	///
+	/// # Errors
+	///
+	/// If we cannot find an `ExitCode` in the docker response, or talk to the docker socket.
 	pub async fn get_execution_status_code(client: &HttpClient, execution_id: &str) -> Result<i64> {
 		let url = format!("/exec/{}/json", execution_id);
 		let resp = Self::docker_api_get(client, &url, None, true).await?;
@@ -896,7 +976,95 @@ impl DockerExecutor {
 		Ok(exit_code_opt.as_i64().unwrap())
 	}
 
+	/// Setup the permission helper for this docker container if it's been configured.
+	///
+	/// # Errors
+	///
+	/// If we cannot talk to the docker socket, or cannot create the user.
+	pub async fn setup_permission_helper(&self) -> Result<()> {
+		if self.run_as_user_id != 0 || self.run_as_group_id != 0 {
+			let sudo_execution_id = self
+				.raw_execute_and_wait(
+					&[
+						"/usr/bin/env".to_owned(),
+						"bash".to_owned(),
+						"-c".to_owned(),
+						"hash sudo".to_owned(),
+					],
+					false,
+				)
+				.await?;
+			let has_sudo =
+				Self::get_execution_status_code(&self.client, &sudo_execution_id).await? == 0;
+
+			// Create the user.
+			let creation_execution_id = match (self.user == "root", has_sudo) {
+				(true, _) | (false, false) => {
+					self.raw_execute_and_wait(&[
+						"/usr/bin/env".to_owned(),
+						"bash".to_owned(),
+						"-c".to_owned(),
+						format!("groupadd -g {} -o dl && useradd -u {} -g {} -o -c '' -m dl", self.run_as_group_id, self.run_as_user_id, self.run_as_group_id)
+					], false).await?
+				},
+				(false, true) => {
+					self.raw_execute_and_wait(&[
+						"/usr/bin/env".to_owned(),
+						"bash".to_owned(),
+						"-c".to_owned(),
+						format!("sudo -n groupadd -g {} -o dl && sudo -n useradd -u {} -g {} -o -c '' -m dl", self.run_as_group_id, self.run_as_user_id, self.run_as_group_id)
+					], false).await?
+				},
+			};
+			if Self::get_execution_status_code(&self.client, &creation_execution_id).await? != 0 {
+				return Err(anyhow!(
+					"Failed to get successful ExitCode from docker on user creation!"
+				));
+			}
+
+			// Allow the user to sudo, if sudo is installed.
+			if has_sudo {
+				let sudo_user_creation_id = match (self.user == "root", has_sudo) {
+					(true, true) => {
+						self.raw_execute_and_wait(&[
+							"/usr/bin/env".to_owned(),
+							"bash".to_owned(),
+							"-c".to_owned(),
+							"mkdir -p /etc/sudoers.d && echo \"dl ALL=(root) NOPASSWD:ALL\" > /etc/sudoers.d/dl && chmod 0440 /etc/sudoers.d/dl".to_owned()
+						], false).await?
+					}
+					(false, true) => {
+						self.raw_execute_and_wait(&[
+							"/usr/bin/env".to_owned(),
+							"bash".to_owned(),
+							"-c".to_owned(),
+							"sudo -n mkdir -p /etc/sudoers.d && echo \"dl ALL=(root) NOPASSWD:ALL\" | sudo -n tee /etc/sudoers.d/dl && sudo -n chmod 0440 /etc/sudoers.d/dl".to_owned()
+						], false).await?
+					}
+					(_, _) => { "".to_owned() }
+				};
+
+				if !sudo_user_creation_id.is_empty()
+					&& Self::get_execution_status_code(&self.client, &sudo_user_creation_id).await?
+						!= 0
+				{
+					return Err(anyhow!(
+						"Failed to setup passwordless sudo access for user!"
+					));
+				}
+			}
+
+			Ok(())
+		} else {
+			Ok(())
+		}
+	}
+
 	/// Ensure the docker container exists.
+	///
+	/// # Errors
+	///
+	/// If we cannot talk to the docker socket, or there is a conflict creating the container.
 	pub async fn ensure_docker_container(&self) -> Result<()> {
 		let image_exists_url = format!("/images/{}/json", &self.image);
 		let image_exists = Self::docker_api_get(&self.client, &image_exists_url, None, false)
@@ -918,21 +1086,16 @@ impl DockerExecutor {
 		}
 
 		let execution_id = self
-			.raw_execute(&[
-				"/usr/bin/env".to_owned(),
-				"bash".to_owned(),
-				"-c".to_owned(),
-				"hash bash".to_owned(),
-			])
+			.raw_execute_and_wait(
+				&[
+					"/usr/bin/env".to_owned(),
+					"bash".to_owned(),
+					"-c".to_owned(),
+					"hash bash".to_owned(),
+				],
+				false,
+			)
 			.await?;
-
-		loop {
-			if Self::has_execution_finished(&self.client, &execution_id).await {
-				break;
-			}
-
-			async_std::task::sleep(std::time::Duration::from_micros(10)).await;
-		}
 
 		let has_bash = Self::get_execution_status_code(&self.client, &execution_id).await?;
 		if has_bash != 0 {
@@ -940,6 +1103,11 @@ impl DockerExecutor {
 				"Docker Image: [{}] does not seem to have bash! This is required for dev-loop!",
 				self.image,
 			));
+		}
+
+		let perm_helper_setup = self.setup_permission_helper().await;
+		if let Err(perm_helper_err) = perm_helper_setup {
+			return Err(perm_helper_err);
 		}
 
 		Ok(())
@@ -979,6 +1147,10 @@ impl DockerExecutor {
 	/// Ensure a particular network has been attached to this container.
 	///
 	/// `network_id`: The Network ID to attach too.
+	///
+	/// # Errors
+	///
+	/// If we fail to talk to the docker socket, or connect the container to the network.
 	pub async fn ensure_network_attached(&self, network_id: &str) -> Result<()> {
 		if !self.is_network_attached(network_id).await {
 			let url = format!("/networks/dl-{}/connect", network_id);
@@ -1186,7 +1358,9 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 
 		let entrypoint_as_str = tmp_path_in_docker.to_str().unwrap();
 
-		let command_res = self.raw_execute(&[entrypoint_as_str.to_owned()]).await;
+		let command_res = self
+			.raw_execute(&[entrypoint_as_str.to_owned()], true)
+			.await;
 		if let Err(command_err) = command_res {
 			error!("Failed to execute command: [{:?}]", command_err);
 			return 10;

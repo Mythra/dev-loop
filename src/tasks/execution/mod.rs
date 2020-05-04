@@ -162,6 +162,10 @@ fn build_helpers_source_string(helpers: Vec<FetchedItem>) -> Result<String> {
 /// `task_count`: the total count of tasks. yes we can derive this, but it's easier
 ///               for it to be derived as the list of lists is being created, and passed in.
 /// `terminal`: the terminal to render status progress too.
+///
+/// # Errors
+///
+/// If we could not execute the tasks in parallel.
 #[allow(clippy::cast_possible_truncation)]
 pub async fn execute_tasks_in_parallel(
 	helpers: Vec<FetchedItem>,

@@ -37,4 +37,5 @@ tracing-log = "^0.1"
 tracing-subscriber = "^0.2"
 twox-hash = "^1.5"
 url = { version = "^2.1" }
+users = { version = "^0.10", default-features = false, features = ["cache", "mock"] }
 uuid = { version = "^0.8", features = ["v4"] }
