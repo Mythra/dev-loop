@@ -37,5 +37,8 @@ steps:
 
   - script: |
       brew install s3cmd
-      ./target/dl-release exec ci-only upload-to-spaces-osx
+      ./target/dl-osx-release exec ci-only upload-to-spaces-osx
     displayName: Publish to Digital Ocean Spaces
+    env:
+      DL_SPACES_BUILD_KEY: $(DL_SPACES_BUILD_KEY)
+      DL_SPACES_BUILD_SECRET: $(DL_SPACES_BUILD_SECRET)

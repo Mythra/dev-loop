@@ -41,3 +41,6 @@ steps:
       sudo apt-get update && sudo apt-get -y install s3cmd
       ./target/dl-release exec ci-only upload-to-spaces-linux
     displayName: Publish to Digital Ocean Spaces
+    env:
+      DL_SPACES_BUILD_KEY: $(DL_SPACES_BUILD_KEY)
+      DL_SPACES_BUILD_SECRET: $(DL_SPACES_BUILD_SECRET)
