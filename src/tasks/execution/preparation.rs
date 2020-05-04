@@ -326,7 +326,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 									fetcher,
 									executors,
 									root_directory,
-									Vec::from(arguments),
+									final_args,
 								)
 								.await?,
 							)),
@@ -337,7 +337,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 									fetcher,
 									executors,
 									root_directory,
-									Vec::from(arguments),
+									final_args,
 								)
 								.await?,
 							),

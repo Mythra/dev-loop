@@ -149,8 +149,8 @@ impl Term {
 
 		for (key, description) in list_with_descriptions {
 			let mut actual_key = String::new();
-			if key.len() > 15 {
-				actual_key = key.chars().take(12).collect();
+			if key.len() > 20 {
+				actual_key = key.chars().take(17).collect();
 				actual_key += "...";
 			} else {
 				actual_key = key.to_owned();

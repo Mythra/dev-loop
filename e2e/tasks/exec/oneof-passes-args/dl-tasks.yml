@@ -1,0 +1,19 @@
+---
+tasks:
+  - name: oneof-passes-args-cmd
+    type: command
+    location:
+      type: path
+      at: script.sh
+    execution_needs:
+      - name: host
+    internal: true
+
+  - name: oneof-passes-args
+    type: oneof
+    options:
+      - name: script
+        task: oneof-passes-args-cmd
+        args:
+          - hello
+          - world

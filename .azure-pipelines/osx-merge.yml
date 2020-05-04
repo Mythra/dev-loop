@@ -22,7 +22,7 @@ steps:
 
   - script: |
       mkdir -p ./scratch/
-      (cd ./scratch/ && curl -sSL -o dl https://github.com/SecurityInsanity/dev-loop/releases/download/0.1.1/dl-osx && chmod +x dl)
+      (cd ./scratch/ && curl -sSL -o dl https://dev-loop-builds.sfo2.digitaloceanspaces.com/latest/dl-osx && chmod +x dl)
     displayName: Download Dev-Loop
 
   - script: |
@@ -34,3 +34,8 @@ steps:
       path: $(System.DefaultWorkingDirectory)/target/dl-osx-release
       artifact: dl-osx
     displayName: Publish Dev-Loop Release
+
+  - script: |
+      brew install s3cmd
+      ./target/dl-release exec ci-only upload-to-spaces-osx
+    displayName: Publish to Digital Ocean Spaces

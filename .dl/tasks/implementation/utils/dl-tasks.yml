@@ -8,3 +8,11 @@ tasks:
     execution_needs:
       - name: host
     internal: true
+  - name: spaces-build-upload-file
+    description: upload a file to the digital ocean space for builds
+    location:
+      type: path
+      at: spaces-upload.sh
+    execution_needs:
+      - name: host
+    internal: true

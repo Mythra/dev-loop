@@ -136,17 +136,21 @@ fn build_helpers_source_string(helpers: Vec<FetchedItem>) -> Result<String> {
 	for (idx, fetched_helper) in helpers.into_iter().enumerate() {
 		let mut helper_path = helper_dir.clone();
 		helper_path.push(format!("helper-{}.sh", idx));
-		let helper_write_res = std::fs::write(helper_path, fetched_helper.get_contents());
+		let helper_write_res = std::fs::write(helper_path.clone(), fetched_helper.get_contents());
 		if let Err(write_err) = helper_write_res {
 			return Err(Error::new(write_err));
 		}
 
+		let tmp_path = format!("/tmp/{}-helpers-dl-host/helper-{}.sh", epoch, idx);
 		if src_string.is_empty() {
-			src_string = format!("source /tmp/{}-helpers-dl-host/helper-{}.sh", epoch, idx);
+			src_string = format!(
+				"[[ -f \"{}\" ]] && source \"{}\" || source {:?}",
+				tmp_path, tmp_path, helper_path
+			);
 		} else {
 			src_string += &format!(
-				" && source /tmp/{}-helpers-dl-host/helper-{}.sh",
-				epoch, idx
+				" && [[ -f \"{}\" ]] && source \"{}\" || source {:?}",
+				tmp_path, tmp_path, helper_path
 			);
 		}
 	}

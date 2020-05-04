@@ -36,3 +36,15 @@ tasks:
       - name: build-osx-dl-release
         description: build the dev-loop binary in release
         task: build-dl-osx-release
+      - name: upload-to-spaces-linux
+        description: upload the linux release binary to spaces
+        task: spaces-build-upload-file
+        args:
+          - ./target/dl-release
+          - latest/dl-linux
+      - name: upload-to-spaces-osx
+        description: upload the osx release binary to spaces
+        task: spaces-build-upload-file
+        args:
+          - ./target/dl-osx-release
+          - latest/dl-osx
