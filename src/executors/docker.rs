@@ -997,6 +997,23 @@ impl DockerExecutor {
 			let has_sudo =
 				Self::get_execution_status_code(&self.client, &sudo_execution_id).await? == 0;
 
+			// This may be a re-used docker container in which case a user with 'dl'
+			// already exists.
+			let user_exist_id = self
+				.raw_execute_and_wait(
+					&[
+						"/usr/bin/env".to_owned(),
+						"bash".to_owned(),
+						"-c".to_owned(),
+						"getent passwd dl".to_owned(),
+					],
+					false,
+				)
+				.await?;
+			if Self::get_execution_status_code(&self.client, &user_exist_id).await? == 0 {
+				return Ok(());
+			}
+
 			// Create the user.
 			let creation_execution_id = match (self.user == "root", has_sudo) {
 				(true, _) | (false, false) => {
