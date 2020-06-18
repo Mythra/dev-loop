@@ -31,7 +31,7 @@ module.exports = {
         docs: {
           sidebarPath: require.resolve('./sidebars.js'),
           editUrl:
-            'https://github.com/SecurityInsanity/dev-loop/edit/master/docs/',
+            'https://github.com/SecurityInsanity/dev-loop/edit/trunk/docs/',
         },
         theme: {
           customCss: require.resolve('./src/css/custom.css'),
