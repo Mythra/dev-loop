@@ -1041,29 +1041,23 @@ impl DockerExecutor {
 
 			// Allow the user to sudo, if sudo is installed.
 			if has_sudo {
-				let sudo_user_creation_id = match (self.user == "root", has_sudo) {
-					(true, true) => {
-						self.raw_execute_and_wait(&[
-							"/usr/bin/env".to_owned(),
-							"bash".to_owned(),
-							"-c".to_owned(),
-							"mkdir -p /etc/sudoers.d && echo \"dl ALL=(root) NOPASSWD:ALL\" > /etc/sudoers.d/dl && chmod 0440 /etc/sudoers.d/dl".to_owned()
-						], false).await?
-					}
-					(false, true) => {
-						self.raw_execute_and_wait(&[
+				let sudo_user_creation_id = if self.user == "root" {
+					self.raw_execute_and_wait(&[
+						"/usr/bin/env".to_owned(),
+						"bash".to_owned(),
+						"-c".to_owned(),
+						"mkdir -p /etc/sudoers.d && echo \"dl ALL=(root) NOPASSWD:ALL\" > /etc/sudoers.d/dl && chmod 0440 /etc/sudoers.d/dl".to_owned()
+					], false).await?
+				} else {
+					self.raw_execute_and_wait(&[
 							"/usr/bin/env".to_owned(),
 							"bash".to_owned(),
 							"-c".to_owned(),
 							"sudo -n mkdir -p /etc/sudoers.d && echo \"dl ALL=(root) NOPASSWD:ALL\" | sudo -n tee /etc/sudoers.d/dl && sudo -n chmod 0440 /etc/sudoers.d/dl".to_owned()
 						], false).await?
-					}
-					(_, _) => { "".to_owned() }
 				};
 
-				if !sudo_user_creation_id.is_empty()
-					&& Self::get_execution_status_code(&self.client, &sudo_user_creation_id).await?
-						!= 0
+				if Self::get_execution_status_code(&self.client, &sudo_user_creation_id).await? != 0
 				{
 					return Err(anyhow!(
 						"Failed to setup passwordless sudo access for user!"
