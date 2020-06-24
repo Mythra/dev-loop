@@ -32,3 +32,29 @@ A list of of presets that can end up being run based on a series of tasks.
 - `task_locations`: List[<a href="/docs/schemas/location-conf" class="internal-link">LocationConf</a>] [OPTIONAL]
 
 A list of locations to search for `dl-tasks.yml`. These files have the type of <a href="/docs/schemas/task-conf-file" class="internal-link">TaskConfFile</a>.
+
+As a side note the following environment variables are supported with Dev-Loop:
+
+- `TMPDIR`: String [OPTIONAL]
+
+Used for controlling the temporary directory to mount/use in containers. OSX sets this automatically. If not specified `/tmp/` will be used.
+
+- `DL_WORKER_COUNT`: Unsigned Integer [OPTIONAL]
+
+Used to limit/control the number of workers that dev-loop will use in parallel scenarios.
+
+- `NO_COLOR`: Unset/Set [OPTIONAL]
+
+When no color is set to any value, there will be no color, or fancy text printed to the terminal.
+
+- `DL_FORCE_COLOR`: Boolean [OPTIONAL]
+
+A boolean to flip forcing color of dev-loop. Overrides the `NO_COLOR` setting. Can be useful when you want other tools to not output color that read from `NO_COLOR`, but allow dev-loop to still output color.
+
+- `DL_FORCE_STDOUT_COLOR`: Boolean [OPTIONAL]
+
+A boolean to force coloring output for things printed to STDOUT. Can be useful when dev-loop doesn't detect your terminal as something needing color.
+
+- `DL_FORCE_STDERR_COLOR`: Boolean [OPTIONAL]
+
+A boolean to force coloring output for things printed to STDERR. Can be useful when dev-loop doesn't detect your terminal as something needing color.

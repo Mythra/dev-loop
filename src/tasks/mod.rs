@@ -118,13 +118,13 @@ impl TaskGraph {
 							));
 						}
 
-						// If it's a 'oneof' or 'pipeline' type, we need to parse it's children
-						// so we can ensure everything is valid.
+						// If it's a 'oneof', 'parallel-pipeline', or 'pipeline' type, we
+						// need to parse it's children so we can ensure everything is valid.
 						//
 						// We call `internal_task_names.remove()` always (it'll be a no-op if it
 						// doesn't contain the key). The `internal_task_names` are tasks that are marked
-						// `internal: true`, but don't yet have a reference. By being in a oneof/pipeline
-						// they themselves have a reference.
+						// `internal: true`, but don't yet have a reference. By being in a
+						// oneof/parallel-pipeline/pipeline they themselves have a reference.
 						//
 						// Next we check if the option "exists", if not. we add it to `unsatisfied_task_names`
 						// so it can be checked later.
@@ -141,7 +141,7 @@ impl TaskGraph {
 									}
 								}
 							}
-							"pipeline" => {
+							"parallel-pipeline" | "pipeline" => {
 								if let Some(steps) = task_conf.get_steps() {
 									for step in steps {
 										internal_task_names.remove(step.get_task_name());
@@ -170,7 +170,8 @@ impl TaskGraph {
 			}
 
 			if !allowing_dag_errors {
-				// If we had any tasks that we're in a 'oneof'/'pipeline', but we never
+				// If we had any tasks that we're in a
+				// 'oneof'/'parallel-pipeline'/'pipeline', but we never
 				// saw... go ahead and error.
 				if !unsatisfied_task_names.is_empty() {
 					return Err(anyhow!(

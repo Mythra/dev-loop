@@ -1,0 +1,63 @@
+---
+tasks:
+  - name: parallel-pipelines-pipeline-one-task-one
+    location:
+      type: path
+      at: pipeline-one/task-one.sh
+    execution_needs:
+      - name: host
+    internal: true
+  - name: parallel-pipelines-pipeline-one-task-two
+    location:
+      type: path
+      at: pipeline-one/task-two.sh
+    execution_needs:
+      - name: host
+    internal: true
+
+  - name: parallel-pipelines-pipeline-two-task-one
+    location:
+      type: path
+      at: pipeline-two/task-one.sh
+    execution_needs:
+      - name: host
+    internal: true
+
+  - name: parallel-pipelines-pipeline-three-task-one
+    location:
+      type: path
+      at: pipeline-three/task-one.sh
+    execution_needs:
+      - name: host
+    internal: true
+
+  - name: pipeline-one
+    type: pipeline
+    internal: true
+    steps:
+      - name: pipeline step one
+        task: parallel-pipelines-pipeline-one-task-one
+      - name: pipeline step two
+        task: parallel-pipelines-pipeline-one-task-two
+  - name: pipeline-two
+    type: pipeline
+    internal: true
+    steps:
+      - name: pipeline step one
+        task: parallel-pipelines-pipeline-two-task-one
+  - name: pipeline-three
+    type: pipeline
+    internal: true
+    steps:
+      - name: pipeline step one
+        task: parallel-pipelines-pipeline-three-task-one
+
+  - name: parallel-pipeline
+    type: parallel-pipeline
+    steps:
+      - name: pipeline one
+        task: pipeline-one
+      - name: pipeline two
+        task: pipeline-two
+      - name: pipeline three
+        task: pipeline-three

@@ -345,7 +345,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 
 						size += 1;
 					}
-					"oneof" | "pipeline" => {
+					"oneof" | "parallel-pipeline" | "pipeline" => {
 						size += build_ordered_execution_list(
 							tasks,
 							task,
@@ -418,7 +418,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 								),
 							};
 						}
-						"oneof" | "pipeline" => {
+						"oneof" | "parallel-pipeline" | "pipeline" => {
 							if let Some(args) = step.get_args() {
 								build_ordered_execution_list(
 									tasks,
@@ -459,6 +459,93 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 				match work_queue {
 					WorkQueue::Queue(queue) => queue.push(WorkUnit::Pipeline(executable_steps)),
 					WorkQueue::VecQueue(vec) => vec.extend(executable_steps),
+				}
+			}
+			"parallel-pipeline" => {
+				let optional_steps = starting_task.get_steps();
+				if optional_steps.is_none() {
+					return Err(anyhow!(
+						"Parallel-Pipeline task: [{}] does not have any steps.",
+						starting_task.get_name(),
+					));
+				}
+
+				let steps = optional_steps.unwrap();
+				for step in steps {
+					let potential_task = tasks.get(step.get_task_name());
+					if potential_task.is_none() {
+						return Err(anyhow!(
+							"The Step: [{}] for Task: [{}] cannot find the task referenced: [{}], it is most likely a task fetched from a remote endpoint that failed.",
+							step.get_name(),
+							starting_task.get_name(),
+							step.get_task_name(),
+						));
+					}
+					let task = potential_task.unwrap();
+
+					let final_args = if let Some(args_ref) = step.get_args() {
+						args_ref.clone()
+					} else {
+						Vec::new()
+					};
+
+					let task_pid = new_pipeline_id();
+					info!(
+						"Parallel-Pipeline task: [{}], inner task: [{}] has been given the pipeline-id: [{}]",
+						starting_task.get_name(),
+						task.get_name(),
+						task_pid,
+					);
+
+					match task.get_type() {
+						"command" => {
+							match work_queue {
+								WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
+									command_to_executable_task(
+										task_pid,
+										task,
+										fetcher,
+										executors,
+										root_directory.clone(),
+										final_args,
+									)
+									.await?,
+								)),
+								WorkQueue::VecQueue(vec) => vec.push(
+									command_to_executable_task(
+										task_pid,
+										task,
+										fetcher,
+										executors,
+										root_directory.clone(),
+										final_args,
+									)
+									.await?,
+								),
+							};
+
+							size += 1;
+						}
+						"oneof" | "parallel-pipeline" | "pipeline" => {
+							size += build_ordered_execution_list(
+								tasks,
+								task,
+								fetcher,
+								executors,
+								root_directory.clone(),
+								&final_args,
+								task_pid,
+								work_queue,
+							)
+							.await?;
+						}
+						_ => {
+							return Err(anyhow!(
+								"Unknown task type for task: [{}]",
+								task.get_name()
+							));
+						}
+					}
 				}
 			}
 			_ => {

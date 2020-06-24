@@ -160,6 +160,7 @@ impl Executor for HostExecutor {
 		should_stop: Arc<AtomicBool>,
 		helper_src_line: &str,
 		task: &ExecutableTask,
+		worker_count: usize,
 	) -> isize {
 		// Execute a particular task:
 		//
@@ -259,6 +260,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 
 		let flush_task = async_std::task::spawn(async move {
 			let mut line = String::new();
+			let channel_name = format!("{}-{}", worker_count, flush_task_name);
 
 			while !flush_has_finished_clone.load(Ordering::Relaxed) {
 				while let Ok(read) = child_stdout.read_line(&mut line) {
@@ -266,7 +268,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 						break;
 					}
 
-					let _ = flush_channel_clone.send((flush_task_name.clone(), line, false));
+					let _ = flush_channel_clone.send((channel_name.clone(), line, false));
 
 					line = String::new();
 				}
@@ -275,7 +277,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 						break;
 					}
 
-					let _ = flush_channel_clone.send((flush_task_name.clone(), line, true));
+					let _ = flush_channel_clone.send((channel_name.clone(), line, true));
 
 					line = String::new();
 				}

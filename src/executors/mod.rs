@@ -46,10 +46,10 @@ pub trait Executor {
 	/// Execute a task.
 	///
 	/// `log_channel`: The channel to send log updates over.
-	/// `log_channel_err`: The channel to send log updates over for STDERR.
 	/// `should_stop`: a helper that tells us when we need to forcibly stop.
 	/// `helper_src_line`: the line that sources in all helper scripts.
 	/// `task`: The actual task to execute.
+	/// `worker_count`: The count of the worker we're placed on.
 	#[must_use]
 	async fn execute(
 		&self,
@@ -57,6 +57,7 @@ pub trait Executor {
 		should_stop: Arc<AtomicBool>,
 		helper_src_line: &str,
 		task: &ExecutableTask,
+		worker_count: usize,
 	) -> isize;
 }
 
