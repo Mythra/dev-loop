@@ -100,6 +100,8 @@ cfg_if::cfg_if! {
 // the only time this is truly slow is when we're downloading a docker image.
 static DOCK_SOCK_LOCK: Lazy<async_std::sync::Mutex<()>> =
 	Lazy::new(|| async_std::sync::Mutex::new(()));
+static DOCK_USER_LOCK: Lazy<async_std::sync::Mutex<()>> =
+	Lazy::new(|| async_std::sync::Mutex::new(()));
 
 /// Represents the actual `DockerExecutor`, responsible for maintaining
 /// the lifecycle of a single docker container.
@@ -982,6 +984,8 @@ impl DockerExecutor {
 	///
 	/// If we cannot talk to the docker socket, or cannot create the user.
 	pub async fn setup_permission_helper(&self) -> Result<()> {
+		let _guard = DOCK_USER_LOCK.lock().await;
+
 		if self.run_as_user_id != 0 || self.run_as_group_id != 0 {
 			let sudo_execution_id = self
 				.raw_execute_and_wait(
@@ -1228,6 +1232,7 @@ impl Executor for DockerExecutor {
 		should_stop: Arc<AtomicBool>,
 		helper_src_line: &str,
 		task: &ExecutableTask,
+		worker_count: usize,
 	) -> isize {
 		// Execute a particular task inside the docker executor.
 		//
@@ -1392,6 +1397,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 				.expect("Failed to open stderr log file even though we created it!");
 			let mut reader = BufReader::new(file);
 			let mut stderr_reader = BufReader::new(err_file);
+			let channel_name = format!("{}-{}", worker_count, flush_task_name);
 
 			while !flush_is_finished_clone.load(Ordering::Relaxed) {
 				while let Ok(read) = reader.read_line(&mut line) {
@@ -1399,7 +1405,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 						break;
 					}
 
-					let _ = flush_channel_clone.send((flush_task_name.clone(), line, false));
+					let _ = flush_channel_clone.send((channel_name.clone(), line, false));
 					line = String::new();
 				}
 				while let Ok(read) = stderr_reader.read_line(&mut line) {
@@ -1407,7 +1413,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 						break;
 					}
 
-					let _ = flush_channel_clone.send((flush_task_name.clone(), line, true));
+					let _ = flush_channel_clone.send((channel_name.clone(), line, true));
 					line = String::new();
 				}
 

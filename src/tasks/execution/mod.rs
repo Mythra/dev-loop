@@ -33,6 +33,7 @@ async fn execute_task_line(
 	should_stop: Arc<AtomicBool>,
 	log_channel: Sender<(String, String, bool)>,
 	task_channel: Sender<TaskChange>,
+	worker_count: usize,
 ) {
 	// The order of executing a task line goes like this:
 	//
@@ -62,7 +63,11 @@ async fn execute_task_line(
 		let work_unit = stolen.success().unwrap();
 		match work_unit {
 			WorkUnit::SingleTask(task) => {
-				let _ = task_channel.send(TaskChange::StartedTask(task.get_task_name().to_owned()));
+				let _ = task_channel.send(TaskChange::StartedTask(format!(
+					"{}-{}",
+					worker_count,
+					task.get_task_name()
+				)));
 				let task_rc = task
 					.get_executor()
 					.execute(
@@ -70,16 +75,23 @@ async fn execute_task_line(
 						should_stop.clone(),
 						&(*src_string),
 						&task,
+						worker_count,
 					)
 					.await;
 				new_rc = task_rc;
-				let _ =
-					task_channel.send(TaskChange::FinishedTask(task.get_task_name().to_owned()));
+				let _ = task_channel.send(TaskChange::FinishedTask(format!(
+					"{}-{}",
+					worker_count,
+					task.get_task_name()
+				)));
 			}
 			WorkUnit::Pipeline(tasks) => {
 				for task in tasks {
-					let _ =
-						task_channel.send(TaskChange::StartedTask(task.get_task_name().to_owned()));
+					let _ = task_channel.send(TaskChange::StartedTask(format!(
+						"{}-{}",
+						worker_count,
+						task.get_task_name()
+					)));
 					let task_rc = task
 						.get_executor()
 						.execute(
@@ -87,11 +99,15 @@ async fn execute_task_line(
 							should_stop.clone(),
 							&(*src_string),
 							&task,
+							worker_count,
 						)
 						.await;
 					new_rc = task_rc;
-					let _ = task_channel
-						.send(TaskChange::FinishedTask(task.get_task_name().to_owned()));
+					let _ = task_channel.send(TaskChange::FinishedTask(format!(
+						"{}-{}",
+						worker_count,
+						task.get_task_name()
+					)));
 
 					if new_rc != 0 {
 						break;
@@ -185,7 +201,7 @@ pub async fn execute_tasks_in_parallel(
 	let src_string = build_helpers_source_string(helpers)?;
 	let src_string_ref = Arc::new(src_string);
 
-	for _ in 0..worker_size {
+	for wc in 0..worker_size {
 		let cloned_src_string_ref = src_string_ref.clone();
 		let cloned_should_stop = should_stop.clone();
 		let cloned_log_sender = log_sender.clone();
@@ -203,6 +219,7 @@ pub async fn execute_tasks_in_parallel(
 				cloned_should_stop,
 				cloned_log_sender,
 				cloned_task_sender,
+				wc,
 			)
 			.await;
 		});

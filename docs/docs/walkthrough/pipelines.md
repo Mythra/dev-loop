@@ -11,6 +11,9 @@ A Pipeline runs a series of tasks in a guaranteed order, and much like oneof's t
 of arguments to pass to the underlying tasks so they remain declarative. A pipeline does not parallelize
 any of the work it's given, merely is a way of running tasks one after another (in a pipeline)!
 
+If you want a series of tasks that always run in parallel, switch from: `pipeline`, to `parallel-pipeline`,
+all the configuration is the same between the two.
+
 This can be useful for doing multi staged docker builds, or setting up something for another task,
 or in our case running multiple tests so you don't have to run one at a time! Much like we did for
 oneof we're going to introduce a new task to our task file:

@@ -18,9 +18,9 @@ or run a one off task. Instead Dev-Loop is meant to be an abstraction point for 
 these tasks. What do you get out of this abstraction point though? Abstraction for no reason
 can be harmful afterall.
 
-If you just want to get started using dev-loop we recommend walking through the <a href="/docs/walkthrough/installing" class="internal-link">walkthrough</a>.
+NOTE: If you just want to get started using dev-loop we recommend walking through the <a href="/docs/walkthrough/installing" class="internal-link">walkthrough</a>.
 
-If you've used dev-loop before, and are just looking for the fields that can be configured, and what they do you probably want the <a href="/docs/schemas/provide-conf" class="internal-link">Schema Documentation</a>.
+NOTE: If you've used dev-loop before, and are just looking for the fields that can be configured, and what they do you probably want the <a href="/docs/schemas/provide-conf" class="internal-link">Schema Documentation</a>.
 
 ## What Does Dev-Loop Give Me? ##
 

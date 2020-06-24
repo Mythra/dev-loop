@@ -114,14 +114,14 @@ pub async fn handle_run_command(
 		return 16;
 	}
 	let helpers = helpers_res.unwrap();
-	let rc_res = execute_tasks_in_parallel(
-		helpers,
-		worker,
-		task_size,
-		terminal,
-		num_cpus::get_physical(),
-	)
-	.await;
+
+	let mut parallelism = num_cpus::get_physical();
+	if let Ok(env_var) = std::env::var("DL_WORKER_COUNT") {
+		if let Ok(worker_count) = env_var.parse::<usize>() {
+			parallelism = worker_count;
+		}
+	}
+	let rc_res = execute_tasks_in_parallel(helpers, worker, task_size, terminal, parallelism).await;
 
 	match rc_res {
 		Ok(rc) => {

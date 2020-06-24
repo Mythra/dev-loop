@@ -12,7 +12,7 @@ The name of the task. This needs to be unique across the entire project.
 
 - `type`: String [OPTIONAL]
 
-The type of task this is. Currently there are three supported options `command`, `oneof`, and `pipeline`.
+The type of task this is. Currently there are three supported options `command`, `oneof`, `pipeline`, and `parallel-pipeline`.
 If you do not specify a type `command` will be assumed.
 
 - `description`: String [OPTIONAL]
@@ -35,7 +35,7 @@ Represents a custom executor for this one task. In general we don't recommend se
 However there may be specific cases where you want to make it clear this task has needs for a very special executor.
 A `custom_executor` will always be selected if specified, and can still be reused within a pipeline.
 
-- `steps`: List[<a href="/docs/schemas/pipeline-step" class="internal-link">PipelineStep</a>] [REQUIRED for "pipeline" type tasks] [IGNORED for "command"/"oneof" tasks]
+- `steps`: List[<a href="/docs/schemas/pipeline-step" class="internal-link">PipelineStep</a>] [REQUIRED for "pipeline"/"parallel-pipeline" type tasks] [IGNORED for "command"/"oneof" tasks]
 
 An ordered list of steps to run when running a pipeline.
 If specified on a command/oneof task it will have no effect.
@@ -52,6 +52,6 @@ A list of tags to apply to this task. Tags can be selected by presets in order t
 - `internal`: Bool [OPTIONAL]
 
 Whether or not this task is "internal". If a task is internal it will not be shown on any list command, and
-cannot be run directly (it must be invoked through a `oneof`/`pipeline`).
+cannot be run directly (it must be invoked through a `oneof`/`pipeline`/`parallel-pipeline`).
 All internal tasks must be used at least once, or an error will occur because it would be impossible
 for that task to do anything.
