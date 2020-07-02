@@ -4,11 +4,19 @@
 //! a docker executor the code that spins up/down the container will be here.
 
 use crate::{
-	config::types::{ExecutorConf, ExecutorConfFile, NeedsRequirement, TaskConf, TopLevelConf},
-	fetch::{Fetcher, FetcherRepository},
+	config::types::{
+		ExecutorConf, ExecutorConfFile, ExecutorType, LocationType, NeedsRequirement, TaskConf, TopLevelConf,
+	},
+	fetch::FetcherRepository,
 	tasks::execution::preparation::ExecutableTask,
+	yaml_err::contextualize_yaml_err,
 };
-use anyhow::{anyhow, Result};
+
+use color_eyre::{
+	eyre::{eyre, WrapErr},
+	section::help::Help,
+	Result,
+};
 use crossbeam_channel::Sender;
 use std::{
 	collections::{HashMap, HashSet},
@@ -17,7 +25,7 @@ use std::{
 	path::PathBuf,
 	sync::{atomic::AtomicBool, Arc, RwLock},
 };
-use tracing::{error, info};
+use tracing::{debug, error};
 use twox_hash::{RandomXxHashBuilder64, XxHash64};
 
 /// Describes the compatibility status of a particular Executor.
@@ -72,8 +80,6 @@ pub mod host;
 pub struct ExecutorRepository {
 	/// Defines the executors that are currently running.
 	active_executors: RwLock<HashSet<String>>,
-	/// The ID of the default executor.
-	default_executor_id: String,
 	/// Defines the repository of executors that are compatible with this system.
 	repo: RwLock<HashMap<String, Arc<dyn Executor + Sync + Send>>>,
 	/// The root project directory.
@@ -103,9 +109,8 @@ impl Debug for ExecutorRepository {
 		}
 
 		formatter.write_str(&format!(
-			"ExecutorRepository default id: {}{}{} executors: {}{}{} active: {}{}{} root_dir: {}{:?}{}",
-			"{", self.default_executor_id, "}", "{", keys_str, "}", "{", active_str, "}",
-			"{", self.root_dir, "}",
+			"ExecutorRepository executors: {}{}{} active: {}{}{} root_dir: {}{:?}{}",
+			"{", keys_str, "}", "{", active_str, "}", "{", self.root_dir, "}",
 		))
 	}
 }
@@ -121,12 +126,10 @@ impl ExecutorRepository {
 	/// `rd`: The root directory for Dev-Loop
 	#[allow(clippy::cognitive_complexity, clippy::map_entry)]
 	#[must_use]
-	#[tracing::instrument]
 	pub async fn new(tlc: &TopLevelConf, fr: &FetcherRepository, rd: &PathBuf) -> Result<Self> {
 		// Keep track of any executors we can construct outside of a custom_executor
 		// for a task. Which will be constructed when the task is run.
 		let mut executors = HashMap::new();
-		let mut default_executor_id = String::new();
 		// The hasher is used to assign global unique IDs.
 		let hash_builder = RandomXxHashBuilder64::default();
 
@@ -136,47 +139,45 @@ impl ExecutorRepository {
 		// If someone tries to use it will fail, but if they don't it won't impact
 		// their work if someone else breaks it somehow.
 		if let Some(econf) = tlc.get_default_executor() {
-			let exec_res = Self::instantiate_executor(rd, econf).await;
-			if let Err(err_exec) = exec_res {
-				error!(
-					"Failed to construct default executor due to: [{:?}]. Will not be choosing.",
-					err_exec,
-				);
-			} else {
-				let (id, exec) = exec_res.unwrap();
-				// The default executor will never conflict because nothing else is in the map.
-				//
-				// As such do not check for "does this id collide with another?"
-				info!(
-					"Default Executor has been assigned ID: [{}] along with [default]",
-					id
-				);
-				default_executor_id = id.clone();
-				executors.insert(id, exec);
+			match Self::instantiate_executor(rd, econf)
+				.await
+				.wrap_err(
+					"Error attempting to instantiate `default_executor` defined in `.dl/config.yml`",
+				)
+				.note("Will not choose this executor.")
+			{
+				Ok((_, executor)) => {
+					// The default executor will never conflict because nothing else is in the map.
+					// As such we don't need to check for colissions.
+					executors.insert("default".to_owned(), executor);
+					debug!("Inserted 'default' executor.");
+				}
+				Err(err) => error!("{:?}", err),
 			}
 		}
 
 		if let Some(executor_locations) = tlc.get_executor_locations() {
-			for exec_location in executor_locations {
+			for (eloc_idx, exec_location) in executor_locations.iter().enumerate() {
 				// Go fetch all the executors that we can.
 				// If search in folders look for: `dl-executors.yml`.
 				let resulting_fetched_executors = fr
 					.fetch_filter(exec_location, Some("dl-executors.yml".to_owned()))
-					.await;
+					.await
+					.wrap_err(format!("Error while grabbing location specified at `.dl/config.yml:executor_locations:{}`", eloc_idx));
 
 				// For HTTP errors we're going to try to continue, if your FS fails
-				// well than something really bad is going on that we don't want to handle.
+				// well than something really bad is going on, and further FS
+				// operations are most likely to fail, so just fail fast.
 				if let Err(err) = resulting_fetched_executors {
-					if exec_location.get_type() == "http" {
-						error!("Failed to fetch from an HTTP Endpoint. Trying to continue anyway, incase you're running a task that is fully local with no internet...");
+					if exec_location.get_type() == &LocationType::HTTP {
+						error!("{:?}", err);
+						error!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
 						continue;
 					} else {
-						error!("Location type failed to fetch a filesystem component! Assuming this is a critical error.");
-						return Err(anyhow!(
-							"Failed to fetch executors from FS: [{:?}] Internal Err: [{:?}]",
-							exec_location,
-							err,
-						));
+						return Err(err.wrap_err(format!(
+							"Failed to read the file: [{}] from the filesystem.",
+							exec_location.get_at(),
+						)));
 					}
 				}
 
@@ -185,11 +186,12 @@ impl ExecutorRepository {
 					let exec_yaml_res =
 						serde_yaml::from_slice::<ExecutorConfFile>(&exec_conf_file.get_contents());
 					if let Err(exec_err) = exec_yaml_res {
-						return Err(anyhow!(
-							"Failed to parse executor file as yaml, path: [{:?}], err: [{:?}]",
+						return contextualize_yaml_err(
+							Err(exec_err),
 							exec_conf_file.get_source(),
-							exec_err,
-						));
+							&String::from_utf8_lossy(exec_conf_file.get_contents()).to_string()
+						).wrap_err("Failed to parse executor file as yaml")
+						 .note("Full types, and supported values are documented at: https://dev-loop.kungfury.io/docs/schemas/executor-conf-file");
 					}
 					let exec_yaml = exec_yaml_res.unwrap();
 
@@ -201,7 +203,7 @@ impl ExecutorRepository {
 						let exec_res = Self::instantiate_executor(rd, &econf).await;
 						if let Err(exec_init_err) = exec_res {
 							error!(
-								"Failed to initialize executor #{} in location: [{}] due to: [{:?}] Will not be choosing.",
+								"Failed to initialize executor #{} from: [{}] due to: {:?}. Will not be choosing.",
 								idx + 1,
 								exec_conf_file.get_source(),
 								exec_init_err,
@@ -212,7 +214,7 @@ impl ExecutorRepository {
 						let (mut potential_id, executor) = exec_res.unwrap();
 						if &potential_id == "host" {
 							if !executors.contains_key(&potential_id) {
-								info!("Inserting host executor!");
+								debug!("Inserting host executor!");
 								executors.insert(potential_id, executor);
 							}
 							continue;
@@ -221,7 +223,7 @@ impl ExecutorRepository {
 							potential_id =
 								Self::hash_string(&potential_id, hash_builder.build_hasher());
 						}
-						info!(
+						debug!(
 							"Executor #{} at location: [{}] has been assigned ID: [{}]",
 							idx + 1,
 							exec_conf_file.get_source(),
@@ -235,7 +237,6 @@ impl ExecutorRepository {
 
 		Ok(Self {
 			active_executors: RwLock::new(HashSet::new()),
-			default_executor_id,
 			repo: RwLock::new(executors),
 			root_dir: rd.clone(),
 		})
@@ -245,7 +246,6 @@ impl ExecutorRepository {
 	///
 	/// `task`: The actual task configuration.
 	#[allow(clippy::cognitive_complexity)]
-	#[tracing::instrument]
 	pub async fn select_executor(
 		&mut self,
 		task: &TaskConf,
@@ -257,8 +257,8 @@ impl ExecutorRepository {
 		let repo = self.repo.write();
 		if let Err(repo_err) = repo {
 			error!(
-				"Failed to acquire repo write lock in select_executor: [{:?}]",
-				repo_err
+				"Internal Error, please report as an issue. Maintainer Info: [repo_write_mutex_failure: {:?}]",
+				repo_err,
 			);
 			return None;
 		}
@@ -266,8 +266,8 @@ impl ExecutorRepository {
 		let active_executors = self.active_executors.write();
 		if let Err(ae_err) = active_executors {
 			error!(
-				"Failed to acquire active_executors write lock in select_executor: [{:?}]",
-				ae_err
+				"Internal Error, please report as an issue. Maintainer Info: [active_executors_mutex_failure: {:?}]",
+				ae_err,
 			);
 			return None;
 		}
@@ -289,7 +289,7 @@ impl ExecutorRepository {
 		// If a user has specified a custom executor.
 		// This must be used.
 		if let Some(custom_executor_config) = task.get_custom_executor() {
-			info!(
+			debug!(
 				"Task: [{}] has specified custom executor... using",
 				task.get_name()
 			);
@@ -298,9 +298,10 @@ impl ExecutorRepository {
 
 			if let Err(resulting_err) = resulting_executor {
 				error!(
-					"Failed to construct custom executor for task: [{}] due to: [{:?}]",
+					"Failed to construct custom executor for task: [{}] defined in: [{}] due to: {:?}",
 					task.get_name(),
-					resulting_err
+					task.get_source_path(),
+					resulting_err,
 				);
 				return None;
 			}
@@ -316,7 +317,7 @@ impl ExecutorRepository {
 				}
 				repo.insert(potential_id.clone(), executor);
 			}
-			info!(
+			debug!(
 				"Custom Executor for task: [{}] generated id: [{}]",
 				task.get_name(),
 				potential_id
@@ -332,19 +333,19 @@ impl ExecutorRepository {
 		}
 
 		if let Some(needs) = task.get_execution_needs() {
-			info!(
+			debug!(
 				"Task: [{}] has specified environment needs. Using those.",
-				task.get_name()
+				task.get_name(),
 			);
 
 			// Check active executors first
 			for id in &*active_executors {
 				let executor = repo.get(id).unwrap();
 				if executor.meets_requirements(needs) {
-					info!(
+					debug!(
 						"Task: [{}] has it's requirements met by already active executor: [{}]",
 						task.get_name(),
-						id
+						id,
 					);
 					return Some(executor.clone());
 				}
@@ -353,32 +354,36 @@ impl ExecutorRepository {
 			// Check all again, yes this means we will check some twice.
 			for (id, exec) in &*repo {
 				if exec.meets_requirements(needs) {
-					info!(
+					debug!(
 						"Task: [{}] has it's requirements met by executor: [{}]",
 						task.get_name(),
-						id
+						id,
 					);
 					return Some(exec.clone());
 				}
 			}
 
+			// TODO(cynthia): report on execution needs specifically that don't match.
+			// TODO(cynthia): check for typos in matching statements too.
 			error!(
-				"Failed to find an executor that provides what task: [{}] has speficied in it's needs",
-				task.get_name()
+				"Cannot find a way to run: [{}] please check the `execution_needs` fields for the task in: [{}]",
+				task.get_name(),
+				task.get_source_path(),
 			);
 			return None;
 		}
 
 		// Finally fallback to the default executor.
-		if self.default_executor_id.is_empty() {
+		if repo.contains_key("default") {
+			debug!("Selecting Default executor for task: [{}]", task.get_name());
+			Some(repo.get("default").unwrap().clone())
+		} else {
 			error!(
-				"Task: [{}] did not specify needs requirement, or custom executor, and no default executor has been defined!",
-				task.get_name()
+				"Cannot find a way to run: [{}] defined in: [{}], did not specify a `custom_executor`/`execution_needs`, and a valid default executor has not been defined.",
+				task.get_name(),
+				task.get_source_path(),
 			);
 			None
-		} else {
-			info!("Selecting Default executor for task: [{}]", task.get_name());
-			Some(repo.get(&self.default_executor_id).unwrap().clone())
 		}
 	}
 
@@ -409,20 +414,20 @@ impl ExecutorRepository {
 		conf: &ExecutorConf,
 	) -> Result<(String, Arc<dyn Executor + Send + Sync>)> {
 		// Help the type checker out.
-		let ret_v: Result<(String, Arc<dyn Executor + Send + Sync>)> = match conf.get_type() {
-			"host" => {
+		let ret_v: Result<(String, Arc<dyn Executor + Send + Sync>)> = match *conf.get_type() {
+			ExecutorType::Host => {
 				let compatibility = host::HostExecutor::is_compatible();
 				match compatibility {
 					CompatibilityStatus::Compatible => {}
 					CompatibilityStatus::CouldBeCompatible(how_to_install) => {
-						return Err(anyhow!(
+						return Err(eyre!(
 							"The host executor is not currently compatible with this system. To get it compatible you should: {}",
 							how_to_install,
 						));
 					}
 					CompatibilityStatus::CannotBeCompatible(potential_help) => {
-						return Err(anyhow!(
-							"The host executor could never be compatible with this system. The help text is provided: [{:?}]",
+						return Err(eyre!(
+							"The host executor could never be compatible with this system. The help text is provided: {:?}",
 							potential_help,
 						));
 					}
@@ -430,19 +435,19 @@ impl ExecutorRepository {
 				let he = host::HostExecutor::new(rd)?;
 				Ok(("host".to_owned(), Arc::new(he)))
 			}
-			"docker" => {
+			ExecutorType::Docker => {
 				let compatibility = docker::DockerExecutor::is_compatible().await;
 				match compatibility {
 					CompatibilityStatus::Compatible => {}
 					CompatibilityStatus::CouldBeCompatible(how_to_install) => {
-						return Err(anyhow!(
+						return Err(eyre!(
 							"The docker executor is not currently compatible with this system. To get it compatible you should: {}",
 							how_to_install,
 						));
 					}
 					CompatibilityStatus::CannotBeCompatible(potential_help) => {
-						return Err(anyhow!(
-							"The docker executor could never be compatible with this system. The help text is provided: [{:?}]",
+						return Err(eyre!(
+							"The docker executor could never be compatible with this system. The help text is provided: {:?}",
 							potential_help,
 						));
 					}
@@ -452,8 +457,7 @@ impl ExecutorRepository {
 				let provides = conf.get_provided();
 				let de = docker::DockerExecutor::new(rd, &params, &provides, None)?;
 				Ok((de.get_container_name().to_owned(), Arc::new(de)))
-			}
-			_ => Err(anyhow!("Unknown type of executor!")),
+			},
 		};
 
 		ret_v

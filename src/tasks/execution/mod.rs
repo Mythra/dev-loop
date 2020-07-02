@@ -5,12 +5,13 @@
 pub mod preparation;
 
 use crate::{
+	dirs::get_tmp_dir,
 	fetch::FetchedItem,
-	get_tmp_dir, has_ctrlc_been_hit,
+	sigint::has_ctrlc_been_hit,
 	tasks::execution::preparation::WorkUnit,
-	terminal::{task_indicator::TaskChange, Term},
+	terminal::{task_indicator::TaskChange, TERM},
 };
-use anyhow::*;
+use color_eyre::Result;
 use crossbeam_channel::Sender;
 use crossbeam_deque::{Stealer, Worker};
 use std::{
@@ -21,11 +22,10 @@ use std::{
 	},
 	time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::info;
+use tracing::debug;
 
 /// Execute a particular "line" of tasks.
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument]
 async fn execute_task_line(
 	src_string: Arc<String>,
 	stealer: Stealer<WorkUnit>,
@@ -45,8 +45,8 @@ async fn execute_task_line(
 	//  6. At the end of the line return the rc.
 
 	// Incase we hit a stop before we actually started executing.
-	if should_stop.load(Ordering::SeqCst) {
-		rc.store(10, Ordering::SeqCst);
+	if should_stop.load(Ordering::Acquire) {
+		rc.store(10, Ordering::Release);
 		return;
 	}
 
@@ -121,7 +121,7 @@ async fn execute_task_line(
 		}
 	}
 
-	rc.store(new_rc, Ordering::SeqCst);
+	rc.store(new_rc, Ordering::Release);
 }
 
 /// Get the current epoch second count.
@@ -138,10 +138,7 @@ fn build_helpers_source_string(helpers: Vec<FetchedItem>) -> Result<String> {
 	let epoch = get_epoch_seconds();
 	let mut helper_dir = get_tmp_dir();
 	helper_dir.push(format!("{}-helpers-dl-host/", epoch));
-	let helpers_res = create_dir_all(helper_dir.clone());
-	if let Err(helper_dir_err) = helpers_res {
-		return Err(Error::new(helper_dir_err));
-	}
+	create_dir_all(helper_dir.clone())?;
 
 	// We build the string to source all the helper files and copy that around since it's cheaper.
 	//
@@ -152,10 +149,7 @@ fn build_helpers_source_string(helpers: Vec<FetchedItem>) -> Result<String> {
 	for (idx, fetched_helper) in helpers.into_iter().enumerate() {
 		let mut helper_path = helper_dir.clone();
 		helper_path.push(format!("helper-{}.sh", idx));
-		let helper_write_res = std::fs::write(helper_path.clone(), fetched_helper.get_contents());
-		if let Err(write_err) = helper_write_res {
-			return Err(Error::new(write_err));
-		}
+		std::fs::write(helper_path.clone(), fetched_helper.get_contents())?;
 
 		let tmp_path = format!("/tmp/{}-helpers-dl-host/helper-{}.sh", epoch, idx);
 		if src_string.is_empty() {
@@ -181,7 +175,6 @@ fn build_helpers_source_string(helpers: Vec<FetchedItem>) -> Result<String> {
 ///          of parralelization. the second list executes within order.
 /// `task_count`: the total count of tasks. yes we can derive this, but it's easier
 ///               for it to be derived as the list of lists is being created, and passed in.
-/// `terminal`: the terminal to render status progress too.
 ///
 /// # Errors
 ///
@@ -191,13 +184,12 @@ pub async fn execute_tasks_in_parallel(
 	helpers: Vec<FetchedItem>,
 	tasks: Worker<WorkUnit>,
 	task_count: usize,
-	terminal: &Term,
 	worker_size: usize,
 ) -> Result<i32> {
 	let mut rc_indicators = Vec::new();
 	let should_stop = Arc::new(AtomicBool::new(false));
 
-	let (mut task_indicator, log_sender, task_sender) = terminal.create_task_indicator(task_count);
+	let (mut task_indicator, log_sender, task_sender) = TERM.create_task_indicator(task_count);
 	let src_string = build_helpers_source_string(helpers)?;
 	let src_string_ref = Arc::new(src_string);
 
@@ -232,22 +224,22 @@ pub async fn execute_tasks_in_parallel(
 		task_indicator.tick();
 
 		if has_ctrlc_been_hit() {
-			info!("Detected Ctrl-C being hit! Setting RC to 10, and shutting down.");
+			debug!("Detected Ctrl-C being hit! Setting RC to 10, and shutting down.");
 			rc = 10;
 		}
 
 		if rc != 0 {
-			should_stop.store(true, Ordering::SeqCst);
+			should_stop.store(true, Ordering::Release);
 		}
 
 		let mut any_more = false;
 		for potential_rc in &rc_indicators {
-			let new_rc = potential_rc.load(Ordering::SeqCst);
+			let new_rc = potential_rc.load(Ordering::Acquire);
 			if new_rc == -1 {
 				any_more = true;
 				break;
 			} else {
-				info!("Found finished task rc: [{}]", new_rc);
+				debug!("Found finished task rc: [{}]", new_rc);
 				// If it's already not equal to 0 preserve the original exit code.
 				if rc == 0 {
 					let mut new_rc_as_i32 = new_rc as i32;

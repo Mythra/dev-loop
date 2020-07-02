@@ -1,9 +1,14 @@
 use crate::{
-	config::types::{TaskConf, TopLevelConf},
+	config::types::{TaskConf, TaskType, TopLevelConf},
 	executors::{Executor, ExecutorRepository},
-	fetch::{FetchedItem, Fetcher, FetcherRepository},
+	fetch::{FetchedItem, FetcherRepository},
 };
-use anyhow::{anyhow, Result};
+
+use color_eyre::{
+	eyre::{eyre, WrapErr},
+	section::help::Help,
+	Result,
+};
 use crossbeam_deque::Worker;
 use std::{
 	collections::{HashMap, HashSet},
@@ -11,11 +16,11 @@ use std::{
 	future::Future,
 	hash::BuildHasher,
 	iter::FromIterator,
-	path::PathBuf,
+	path::{Path, PathBuf},
 	pin::Pin,
 	sync::Arc,
 };
-use tracing::{debug, info};
+use tracing::debug;
 use uuid::Uuid;
 
 /// Represents an `ExecutableTask`, or a task that contains all the necessary
@@ -133,18 +138,27 @@ async fn command_to_executable_task(
 	// First select the executor for this environment.
 	let selected_executor = executors.select_executor(task).await;
 	if selected_executor.is_none() {
-		return Err(anyhow!(
-			"Couldn't select executor for task: [{}]",
-			task.get_name()
-		));
+		if task.get_execution_needs().is_some() || task.get_custom_executor().is_some() {
+			return Err(eyre!(
+				"Couldn't find a viable executor for: [{}]",
+				task.get_name()
+			))
+			.suggestion("Please check the `execution_needs` to ensure it can match with an executor.");
+		} else {
+			return Err(eyre!(
+				"Couldn't find a viable executor for: [{}]",
+				task.get_name(),
+			))
+			.suggestion("Check that the `default_executor` has been defined, and loaded successfully.");
+		}
 	}
 	let selected_executor = selected_executor.unwrap();
 
 	// Get the location of the script for this task.
 	let loc = task.get_location();
 	if loc.is_none() {
-		return Err(anyhow!(
-			"Command type task does not have a location of a script: [{}]",
+		return Err(eyre!(
+			"Command type task does not have a location of a script to run: [{}]",
 			task.get_name()
 		));
 	}
@@ -155,22 +169,28 @@ async fn command_to_executable_task(
 	// A task file fetched from a remote endpoint specifying a FS endpoint
 	// would fetch from the root of the project, since it doesn't have an
 	// idea of what to be "relative" too.
-	let tf_loc = task.get_source_path();
-	let root_path = if let Some(task_path) = tf_loc {
-		let mut tpb = PathBuf::from(task_path);
+	let tf_loc: &str = task.get_source_path();
+	let root_path = if Path::new(tf_loc).exists() {
+		let mut tpb = PathBuf::from(tf_loc);
 		tpb.pop();
 		tpb
 	} else {
 		root_directory
 	};
+
 	let resulting_items = fetcher
 		.fetch_with_root_and_filter(loc, &root_path, None)
-		.await?;
+		.await
+		.wrap_err(format!(
+			"Failed fetching task implementation from: `{}:{}`",
+			tf_loc,
+			task.get_name()
+		))?;
 	if resulting_items.len() != 1 {
-		return Err(anyhow!(
+		return Err(eyre!(
 			"Found more than one executable file for task: [{}]",
 			task.get_name()
-		));
+		)).suggestion("If you want multiple scripts they should each have their own task, and be called in a pipeline.");
 	}
 	let resulting_item = resulting_items.into_iter().next().unwrap();
 
@@ -226,8 +246,8 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 	Box::pin(async move {
 		let mut size = 0;
 
-		match starting_task.get_type() {
-			"command" => {
+		match *starting_task.get_type() {
+			TaskType::Command => {
 				match work_queue {
 					WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
 						command_to_executable_task(
@@ -254,17 +274,20 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 				}
 				size += 1;
 			}
-			"oneof" => {
+			TaskType::Oneof => {
 				// Parse a `oneof` type into a list of tasks.
 				// This _will_ recurse if an option is selected that is not a command task.
 
 				// First make sure someone has specified an options block for a oneof type.
 				let options = starting_task.get_options();
 				if options.is_none() {
-					return Err(anyhow!(
+					return Err(eyre!(
 						"Task type is marked oneof but has no options: [{}]",
 						starting_task.get_name()
-					));
+					))
+					.suggestion(
+						"If you really meant to have no options specify an empty array: `[]`.",
+					);
 				}
 				let options = options.unwrap();
 
@@ -274,8 +297,8 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 				}
 				// If it's not an empty set of options we need to know how to choose one of the tasks.
 				if arguments.is_empty() {
-					return Err(anyhow!(
-						"The Task: [{}] needs an argument to know what to invoke!",
+					return Err(eyre!(
+						"The OneOf task: [{}] was selected, but was provided no arguments to know which option to choose.",
 						starting_task.get_name(),
 					));
 				}
@@ -286,8 +309,8 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 					.iter()
 					.find(|option| option.get_name() == arguments[0]);
 				if potential_option.is_none() {
-					return Err(anyhow!(
-						"The Task: [{}] does  not have a sub-task of: [{}]",
+					return Err(eyre!(
+						"The OneOf task: [{}] was selected, and attempted to find the option: [{}], but that option was not found.",
 						starting_task.get_name(),
 						arguments[0],
 					));
@@ -300,12 +323,12 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 				// so it may not be in the TaskGraph.
 				let potential_option_as_task = tasks.get(selected_option.get_task_name());
 				if potential_option_as_task.is_none() {
-					return Err(anyhow!(
-						"The Option: [{}] for Task: [{}] cannot find the task referenced: [{}], it is most likely a task fetched from a remote endpoint that failed.",
-						selected_option.get_name(),
+					return Err(eyre!(
+						"The OneOf task: [{}], selected the option: [{}], but failed to find the task associated to it: [{}]",
 						starting_task.get_name(),
+						selected_option.get_name(),
 						selected_option.get_task_name(),
-					));
+					)).suggestion("Please consult the log above to ensure no fetch errors were enounctered.");
 				}
 				let task = potential_option_as_task.unwrap();
 
@@ -316,8 +339,8 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 				};
 
 				// Now let's add this task to the list of things to run.
-				match task.get_type() {
-					"command" => {
+				match *task.get_type() {
+					TaskType::Command => {
 						match work_queue {
 							WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
 								command_to_executable_task(
@@ -345,7 +368,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 
 						size += 1;
 					}
-					"oneof" | "parallel-pipeline" | "pipeline" => {
+					TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
 						size += build_ordered_execution_list(
 							tasks,
 							task,
@@ -358,23 +381,23 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 						)
 						.await?;
 					}
-					_ => {
-						return Err(anyhow!("Unknown task type for task: [{}]", task.get_name()));
-					}
 				}
 			}
-			"pipeline" => {
+			TaskType::Pipeline => {
 				let optional_steps = starting_task.get_steps();
 				if optional_steps.is_none() {
-					return Err(anyhow!(
+					return Err(eyre!(
 						"Pipeline task: [{}] does not have any steps.",
 						starting_task.get_name(),
-					));
+					))
+					.suggestion(
+						"If you meant to have a pipeline with no steps use an empty array: `[]`.",
+					);
 				}
 
 				let steps = optional_steps.unwrap();
 				let my_pid = new_pipeline_id();
-				info!(
+				debug!(
 					"Pipeline task: [{}] has been given the pipeline-id: [{}]",
 					starting_task.get_name(),
 					my_pid,
@@ -386,12 +409,12 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 				for step in steps {
 					let potential_task = tasks.get(step.get_task_name());
 					if potential_task.is_none() {
-						return Err(anyhow!(
-							"The Step: [{}] for Task: [{}] cannot find the task referenced: [{}], it is most likely a task fetched from a remote endpoint that failed.",
-							step.get_name(),
+						return Err(eyre!(
+							"The Pipeline task: [{}], on step: [{}], failed to find the task associated to it: [{}]",
 							starting_task.get_name(),
-							step.get_task_name(),
-						));
+							step.get_name(),
+							step.get_task_name()
+						)).suggestion("Please consult the log above to ensure no fetch errors were encountered.");
 					}
 					let task = potential_task.unwrap();
 
@@ -401,8 +424,8 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 						Vec::new()
 					};
 
-					match task.get_type() {
-						"command" => {
+					match *task.get_type() {
+						TaskType::Command => {
 							match executable_steps_as_queue {
 								WorkQueue::Queue(_) => unreachable!(),
 								WorkQueue::VecQueue(ref mut vec) => vec.push(
@@ -418,7 +441,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 								),
 							};
 						}
-						"oneof" | "parallel-pipeline" | "pipeline" => {
+						TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
 							if let Some(args) = step.get_args() {
 								build_ordered_execution_list(
 									tasks,
@@ -446,12 +469,6 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 								.await?;
 							}
 						}
-						_ => {
-							return Err(anyhow!(
-								"Unknown task type for task: [{}]",
-								task.get_name()
-							));
-						}
 					}
 				}
 
@@ -461,25 +478,25 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 					WorkQueue::VecQueue(vec) => vec.extend(executable_steps),
 				}
 			}
-			"parallel-pipeline" => {
+			TaskType::ParallelPipeline => {
 				let optional_steps = starting_task.get_steps();
 				if optional_steps.is_none() {
-					return Err(anyhow!(
+					return Err(eyre!(
 						"Parallel-Pipeline task: [{}] does not have any steps.",
 						starting_task.get_name(),
-					));
+					)).suggestion("If you meant to have a parallel-pipeline with no steps use an empty array: `[]`.");
 				}
 
 				let steps = optional_steps.unwrap();
 				for step in steps {
 					let potential_task = tasks.get(step.get_task_name());
 					if potential_task.is_none() {
-						return Err(anyhow!(
-							"The Step: [{}] for Task: [{}] cannot find the task referenced: [{}], it is most likely a task fetched from a remote endpoint that failed.",
-							step.get_name(),
+						return Err(eyre!(
+							"The Parallel-Pipeline task: [{}], on step: [{}], failed to find the task associated to it: [{}]",
 							starting_task.get_name(),
-							step.get_task_name(),
-						));
+							step.get_name(),
+							step.get_task_name()
+						)).suggestion("Please consult the log above to ensure no fetch errors were encountered.");
 					}
 					let task = potential_task.unwrap();
 
@@ -490,15 +507,15 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 					};
 
 					let task_pid = new_pipeline_id();
-					info!(
+					debug!(
 						"Parallel-Pipeline task: [{}], inner task: [{}] has been given the pipeline-id: [{}]",
 						starting_task.get_name(),
 						task.get_name(),
 						task_pid,
 					);
 
-					match task.get_type() {
-						"command" => {
+					match *task.get_type() {
+						TaskType::Command => {
 							match work_queue {
 								WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
 									command_to_executable_task(
@@ -526,7 +543,7 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 
 							size += 1;
 						}
-						"oneof" | "parallel-pipeline" | "pipeline" => {
+						TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
 							size += build_ordered_execution_list(
 								tasks,
 								task,
@@ -539,20 +556,8 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 							)
 							.await?;
 						}
-						_ => {
-							return Err(anyhow!(
-								"Unknown task type for task: [{}]",
-								task.get_name()
-							));
-						}
 					}
 				}
-			}
-			_ => {
-				return Err(anyhow!(
-					"Unknown task type for task: [{}]",
-					starting_task.get_name(),
-				));
 			}
 		}
 
@@ -572,8 +577,15 @@ pub async fn fetch_helpers(tlc: &TopLevelConf, fr: &FetcherRepository) -> Result
 	if let Some(helper_locations) = tlc.get_helper_locations() {
 		let mut fetched_items = Vec::new();
 
-		for loc in helper_locations {
-			fetched_items.extend(fr.fetch_filter(loc, Some(".sh".to_owned())).await?);
+		for (loc_idx, loc) in helper_locations.iter().enumerate() {
+			fetched_items.extend(
+				fr.fetch_filter(loc, Some(".sh".to_owned()))
+					.await
+					.wrap_err(format!(
+						"Failed fetching helpers defined at: `.dl/config.yml:helper_locations:{}`",
+						loc_idx
+					))?,
+			);
 		}
 
 		Ok(fetched_items)

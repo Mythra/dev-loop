@@ -1,0 +1,4 @@
+---
+task_locations:
+  - type: http
+    at: http://lol.lol/lol

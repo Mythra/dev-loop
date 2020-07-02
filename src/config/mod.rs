@@ -4,7 +4,8 @@
 //!
 //! Those validations happen at different stages within the program.
 
-use anyhow::{anyhow, Result};
+use crate::yaml_err::contextualize_yaml_err;
+use color_eyre::{section::help::Help, Result};
 use std::{
 	fs::{canonicalize, File},
 	io::Read,
@@ -56,26 +57,42 @@ pub fn get_project_root() -> Option<PathBuf> {
 }
 
 /// Find and open a file handle the the project level configuration.
-fn find_and_open_project_config() -> Option<File> {
+fn find_and_open_project_config() -> Option<(File, PathBuf)> {
 	get_project_root().and_then(|mut project_root| {
 		project_root.push(".dl/config.yml");
 		trace!("Opening Config Path: [{:?}]", project_root);
 
-		File::open(project_root).ok()
+		let file = File::open(project_root.clone());
+		if let Ok(fh) = file {
+			Some((fh, project_root))
+		} else {
+			None
+		}
 	})
 }
 
 /// Attempt to fetch the top level project configuration for this project.
-#[tracing::instrument]
-pub fn get_top_level_config() -> Result<types::TopLevelConf> {
-	let config_fh = find_and_open_project_config();
-	if config_fh.is_none() {
-		return Err(anyhow!("Failed to find project configuration!"));
+pub fn get_top_level_config() -> Result<Option<types::TopLevelConf>> {
+	let config_fh_opt = find_and_open_project_config();
+	if config_fh_opt.is_none() {
+		error!("Could not find project configuration [.dl/config.yml] looking in current directory, and parent directories.");
+		return Ok(None);
 	}
-	let mut config_fh = config_fh.unwrap();
+	let (mut config_fh, config_path) = config_fh_opt.unwrap();
+	let config_path_as_str = config_path.to_str().unwrap_or_default();
 
-	let mut contents = Vec::new();
-	config_fh.read_to_end(&mut contents)?;
+	let mut contents = String::new();
+	config_fh.read_to_string(&mut contents)?;
 
-	Ok(serde_yaml::from_slice::<types::TopLevelConf>(&contents)?)
+	Ok(Some(
+		contextualize_yaml_err(
+			serde_yaml::from_str::<types::TopLevelConf>(&contents),
+			".dl/config.yml",
+			&contents,
+		)
+		.note(format!(
+			"Full path to project configuration is: {}",
+			config_path_as_str
+		))?,
+	))
 }

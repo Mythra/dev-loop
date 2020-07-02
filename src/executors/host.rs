@@ -3,15 +3,15 @@
 
 use crate::{
 	config::types::NeedsRequirement,
+	dirs::get_tmp_dir,
 	executors::{CompatibilityStatus, Executor},
-	get_tmp_dir,
 	tasks::execution::preparation::ExecutableTask,
 };
-use anyhow::{anyhow, Result};
 use async_std::{
 	fs::{read_dir, remove_dir_all},
 	prelude::*,
 };
+use color_eyre::{eyre::eyre, section::help::Help, Result};
 use crossbeam_channel::Sender;
 use std::{
 	io::{BufRead, BufReader},
@@ -22,7 +22,7 @@ use std::{
 		Arc,
 	},
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 /// Represents the actual executor for the host system.
 #[derive(Debug)]
@@ -40,7 +40,13 @@ impl HostExecutor {
 	pub fn new(project_root: &PathBuf) -> Result<Self> {
 		let pr_as_string = project_root.to_str();
 		if pr_as_string.is_none() {
-			return Err(anyhow!("Failed to turn project root into a utf-8 string!"));
+			return Err(eyre!(
+				"Failed to turn the project directory: [{:?}] into a utf8-string.",
+				project_root,
+			))
+			.suggestion(
+				"Please move the project directory to somewhere that is a UTF-8 only file path.",
+			);
 		}
 
 		Ok(Self {
@@ -51,7 +57,7 @@ impl HostExecutor {
 	/// Performs a clean up of all host resources.
 	#[allow(clippy::cognitive_complexity)]
 	pub async fn clean() {
-		info!("Starting Cleanup for the host executor");
+		// TODO(cynthia): improve logs here.
 
 		// To clean all we would possibly have leftover is files in $TMPDIR.
 		// So we iterate through everything in the temporary directory...
@@ -98,8 +104,6 @@ impl HostExecutor {
 				}
 			}
 		}
-
-		info!("Cleaned");
 	}
 
 	/// Determines if this `HostExecutor` is compatible with the system.
@@ -170,7 +174,7 @@ impl Executor for HostExecutor {
 		//     the script.
 		//  4. Execute the script and wait for it to finish.
 
-		info!("Executing task: [{}]", task.get_task_name());
+		debug!("Host Executor executing task: [{}]", task.get_task_name());
 
 		// Create the pipeline directory.
 		let mut tmp_path = get_tmp_dir();
@@ -187,7 +191,7 @@ impl Executor for HostExecutor {
 		// Write the task file.
 		let mut regular_task = tmp_path.clone();
 		regular_task.push(task.get_task_name().to_owned() + ".sh");
-		info!("Task writing to path: [{:?}]", regular_task);
+		debug!("Host Executor task writing to path: [{:?}]", regular_task);
 		let write_res =
 			async_std::fs::write(&regular_task, task.get_contents().get_contents()).await;
 		if let Err(write_err) = write_res {
@@ -214,7 +218,10 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 			arg_str = task.get_arg_string(),
 		);
 		tmp_path.push(task.get_task_name().to_owned() + "-entrypoint.sh");
-		info!("Task entrypoint is being written too: [{:?}]", tmp_path);
+		debug!(
+			"Host task entrypoint is being written too: [{:?}]",
+			tmp_path
+		);
 		let write_res = async_std::fs::write(&tmp_path, entry_point_file).await;
 		if let Err(write_err) = write_res {
 			error!("Failed to write entrypoint file due to: [{:?}]", write_err);
@@ -304,7 +311,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 			}
 
 			// Have we been requested to stop?
-			if should_stop.load(Ordering::SeqCst) {
+			if should_stop.load(Ordering::Acquire) {
 				error!("HostExecutor was told to stop! killing child...");
 				rc = 10;
 				let _ = child.kill();
@@ -314,7 +321,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 			async_std::task::sleep(std::time::Duration::from_millis(10)).await;
 		}
 
-		has_finished.store(true, Ordering::SeqCst);
+		has_finished.store(true, Ordering::Release);
 		flush_task.await;
 
 		// Return exit code.

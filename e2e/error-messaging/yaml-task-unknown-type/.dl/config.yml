@@ -1,0 +1,5 @@
+---
+task_locations:
+  - type: path
+    at: .dl
+    recurse: false

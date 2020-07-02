@@ -1,4 +1,5 @@
-use crate::terminal::throttle::Throttle;
+use crate::{log::HAS_OUTPUT_LOG_MSG, terminal::throttle::Throttle};
+
 use colored::*;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::collections::{HashMap, HashSet};
@@ -332,6 +333,10 @@ impl TaskIndicator {
 	fn erase_task_lines(&mut self) {
 		// For each line we previously rendered.
 		if self.lines_previously_rendered == 0 {
+			return;
+		}
+		// Don't earse if a log line flew by.
+		if HAS_OUTPUT_LOG_MSG.swap(false, std::sync::atomic::Ordering::Release) {
 			return;
 		}
 

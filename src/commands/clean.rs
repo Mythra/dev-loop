@@ -5,14 +5,18 @@
 
 use crate::executors::{docker::DockerExecutor, host::HostExecutor};
 
-#[tracing::instrument]
-pub async fn handle_clean_command() -> i32 {
-	print!("Cleaning all Resources ...");
-	// TODO(cynthia): wait for async_std::future::join!() to
-	// become stable.
-	HostExecutor::clean().await;
-	DockerExecutor::clean().await;
-	println!(" Done.");
+use color_eyre::Result;
+use tracing::info;
 
-	0
+pub async fn handle_clean_command() -> Result<()> {
+	let span = tracing::info_span!("clean");
+	let _guard = span.enter();
+
+	info!("Cleaning resources ...");
+
+	HostExecutor::clean().await;
+	DockerExecutor::clean().await?;
+
+	info!("Cleaned.");
+	Ok(())
 }

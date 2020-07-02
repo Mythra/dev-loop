@@ -1,0 +1,23 @@
+---
+tasks:
+  - name: echo
+    execution_needs: []
+    location:
+      type: path
+      at: echo.sh
+    tags: [echo]
+
+  - name: internal-echo
+    execution_needs: []
+    location:
+      type: path
+      at: echo.sh
+    internal: true
+    tags: [echo,private]
+
+  - name: echo-options
+    type: oneof
+    options:
+      - name: echo
+        task: internal-echo
+        args: [hey, dude]

@@ -6,7 +6,7 @@ executors:
       experimental_permission_helper: 'true'
       export_env: 'RUST_BACKTRACE'
       extra_mounts: 'scratch/rust-git-cache/:/home/rust/.cargo/git/,scratch/rust-registry-cache/:/home/rust/.cargo/registry/,scratch/rustup-cache/:/home/dl/.rustup/'
-      image: 'ekidd/rust-musl-builder:1.43.0'
+      image: 'ekidd/rust-musl-builder:1.43.1'
       name_prefix: 'rustc-musl-'
       user: 'rust'
     provides:
@@ -17,24 +17,24 @@ executors:
       - name: linux
   - type: docker
     params:
-      image: 'node:12.14'
+      image: 'node:14.4.0'
       name_prefix: 'nodejs-'
     provides:
       - name: nodejs
-        version: '12.14.0'
+        version: '14.4.0'
       - name: bash
         version: '4.0.0'
       - name: linux
   - type: docker
     params:
-      image: 'node:12.14'
+      image: 'node:14.4.0'
       name_prefix: 'nodejs-with-port-'
       tcp_ports_to_expose: '3000'
     provides:
       - name: nodejs-with-port
-        version: '12.14.0'
+        version: '14.4.0'
       - name: nodejs
-        version: '12.14.0'
+        version: '14.4.0'
       - name: bash
         version: '4.0.0'
       - name: linux

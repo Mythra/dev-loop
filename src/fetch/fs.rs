@@ -1,10 +1,10 @@
 //! Contains any fetchers that can fetch content from the filesystem.
 
 use crate::{
-	config::types::LocationConf,
-	fetch::{FetchedItem, Fetcher},
+	config::types::{LocationConf, LocationType},
+	fetch::FetchedItem,
 };
-use anyhow::{anyhow, Result};
+use color_eyre::{eyre::eyre, section::help::Help, Result};
 use std::{
 	fs::{canonicalize, read_dir, File},
 	io::Read,
@@ -12,28 +12,12 @@ use std::{
 };
 use tracing::trace;
 
-/// Handles all fetching based on the 'path' directive.
-///
-/// In effect this only allows fetching from relative directories,
-/// or from the $HOME directory (referred to as: `~`). The reasoning
-/// for this is because we don't want users writing config that will
-/// immediately break on someone elses machine (who doesn't have the
-/// same path). This does mean it may be harder to get stood up in some cases,
-/// but the end result will be better.
-#[derive(Debug)]
-pub struct PathFetcher {
-	/// The root of the current project-directory.
-	///
-	/// Unless otherwise specified, this is the relative directory we will fetch from.
-	project_root: PathBuf,
-}
-
 /// Deteremines if a path is a child of a parent.
 ///
 /// `parent` - the parent path.
 /// `child` - the child to check if a child of the parent.
 #[must_use]
-pub fn path_is_child_of_parent(parent: &PathBuf, child: &PathBuf) -> bool {
+fn path_is_child_of_parent(parent: &PathBuf, child: &PathBuf) -> bool {
 	let parent_as_str = parent.to_str();
 	let child_as_str = child.to_str();
 
@@ -55,7 +39,7 @@ pub fn path_is_child_of_parent(parent: &PathBuf, child: &PathBuf) -> bool {
 /// # Errors
 ///
 /// If we fail to open up the directory, and iterate over the files.
-pub fn iterate_directory(dir: &PathBuf, should_recurse: bool) -> Result<Vec<PathBuf>> {
+fn iterate_directory(dir: &PathBuf, should_recurse: bool) -> Result<Vec<PathBuf>> {
 	let mut results = Vec::new();
 
 	let entries = read_dir(dir)?;
@@ -81,8 +65,14 @@ pub fn iterate_directory(dir: &PathBuf, should_recurse: bool) -> Result<Vec<Path
 /// Read a particular path as a `FetchedItem`.
 ///
 /// `file`: The file to attempt to read into a fetched item.
-fn read_path_as_item_blocking(file: &PathBuf) -> Result<FetchedItem> {
-	let as_str = file.to_str();
+fn read_path_as_item_blocking(file: &PathBuf, project_root: &PathBuf) -> Result<FetchedItem> {
+	let source_path = if let Ok(stripped) = file.strip_prefix(project_root) {
+		stripped
+	} else {
+		file
+	};
+
+	let as_str = source_path.to_str();
 	let source_location = if let Some(the_str) = as_str {
 		the_str.to_owned()
 	} else {
@@ -95,49 +85,47 @@ fn read_path_as_item_blocking(file: &PathBuf) -> Result<FetchedItem> {
 
 	Ok(FetchedItem::new(
 		contents,
-		"path".to_owned(),
+		LocationType::Path,
 		source_location,
 	))
 }
 
+/// Handles all fetching based on the 'path' directive.
+///
+/// In effect this only allows fetching from relative directories,
+/// or from the $HOME directory (referred to as: `~`). The reasoning
+/// for this is because we don't want users writing config that will
+/// immediately break on someone elses machine (who doesn't have the
+/// same path). This does mean it may be harder to get stood up in some cases,
+/// but the end result will be better.
+#[derive(Default)]
+pub struct PathFetcher {}
+
 impl PathFetcher {
-	/// Create a new Fetcher that fetches from Paths.
-	///
-	/// `project_root_directory`: the root of the project.
-	///
-	/// # Errors
-	///
-	/// Will return error if project directory is not a full
-	/// directory.
-	pub fn new(project_root_directory: PathBuf) -> Result<Self> {
-		if !project_root_directory.has_root() {
-			return Err(anyhow!(
-				"A PathFetcher needs a root directory that is absolute!"
-			));
-		}
-
-		Ok(Self {
-			project_root: project_root_directory,
-		})
-	}
-
 	/// Fetch data from the filesystem, but manually specify where the "root" is. Can be used
 	/// if you want to specify a different directory rather than the project directory.
 	///
 	/// `location`: the location to fetch from.
 	/// `root_dir`: the root directory to fetch from
 	/// `filter_filename`: the filename to potentially filter by.
-	async fn internal_fetch(
+	///
+	/// # Errors
+	///
+	/// - When the location is an unknown type.
+	/// - When there is an issue reading from the filesystem.
+	pub async fn fetch_from_fs(
 		&self,
 		location: &LocationConf,
+		project_root: &PathBuf,
 		root_dir: &PathBuf,
 		filter_filename: Option<String>,
 	) -> Result<Vec<FetchedItem>> {
-		if location.get_type() != "path" {
-			return Err(anyhow!(
-				"Location: [{:?}] was passed to PathFetcher but is not a path",
+		if location.get_type() != &LocationType::Path {
+			return Err(eyre!(
+				"Internal-Error: Location: [{:?}] was passed to PathFetcher but is not a path",
 				location
-			));
+			))
+			.suggestion("Please report this issue, and include your configuration.");
 		}
 
 		// We only allow fetching from within the repository.
@@ -151,12 +139,14 @@ impl PathFetcher {
 		let mut built_path = root_dir.clone();
 		built_path.push(location.get_at());
 		let canonicalized = canonicalize(built_path)?;
-		if !path_is_child_of_parent(&self.project_root, &canonicalized) {
-			return Err(anyhow!(
-				"Path: [{:?}] is not a child of project directory: [{:?}], which is required for PathFetcher, so we can ensure it exists everywhere.",
+		if !path_is_child_of_parent(project_root, &canonicalized) {
+			return Err(eyre!(
+				"Path: [{:?}] is not part of the project directory: [{:?}]",
 				&canonicalized,
-				&self.project_root,
-			));
+				project_root,
+			))
+				.note("This is required so other people running your project who may not have the same directories as you can use your project.")
+				.suggestion("Keep all project files inside the project.");
 		}
 
 		let mut results = Vec::new();
@@ -168,59 +158,24 @@ impl PathFetcher {
 				for file_to_read in path_entries {
 					if let Some(utf8_str) = file_to_read.to_str() {
 						if utf8_str.ends_with(&ffn) {
-							results.push(read_path_as_item_blocking(&file_to_read)?);
+							results.push(read_path_as_item_blocking(&file_to_read, project_root)?);
 						}
 					}
 				}
 			} else {
 				for file_to_read in path_entries {
-					results.push(read_path_as_item_blocking(&file_to_read)?);
+					results.push(read_path_as_item_blocking(&file_to_read, project_root)?);
 				}
 			}
 		} else if canonicalized.is_file() {
-			results.push(read_path_as_item_blocking(&canonicalized)?);
+			results.push(read_path_as_item_blocking(&canonicalized, project_root)?);
 		} else {
-			return Err(anyhow!(
+			return Err(eyre!(
 				"PathFetcher can only fetch file or directory, and the path: [{:?}] is not either.",
 				canonicalized
 			));
 		}
 
 		Ok(results)
-	}
-
-	#[must_use]
-	pub fn fetches_for() -> String {
-		"path".to_owned()
-	}
-}
-
-#[async_trait::async_trait]
-impl Fetcher for PathFetcher {
-	#[must_use]
-	async fn fetch(&self, location: &LocationConf) -> Result<Vec<FetchedItem>> {
-		self.internal_fetch(location, &self.project_root, None)
-			.await
-	}
-
-	#[must_use]
-	async fn fetch_filter(
-		&self,
-		location: &LocationConf,
-		filter_filename: Option<String>,
-	) -> Result<Vec<FetchedItem>> {
-		self.internal_fetch(location, &self.project_root, filter_filename)
-			.await
-	}
-
-	#[must_use]
-	async fn fetch_with_root_and_filter(
-		&self,
-		location: &LocationConf,
-		root_dir: &PathBuf,
-		filter_filename: Option<String>,
-	) -> Result<Vec<FetchedItem>> {
-		self.internal_fetch(location, root_dir, filter_filename)
-			.await
 	}
 }

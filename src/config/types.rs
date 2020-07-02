@@ -16,6 +16,17 @@ pub struct ProvideConf {
 	version: Option<String>,
 }
 
+/// All of the possible types of executors that dev-loop supports executing.
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub enum ExecutorType {
+	/// Represents an executor type that utilizes docker containers.
+	#[serde(rename = "docker")]
+	Docker,
+	/// Represents an executor that just uses the raw host.
+	#[serde(rename = "host")]
+	Host,
+}
+
 /// Describes the configuration for an executor.
 ///
 /// This may not be valid executor, this is just the configuration for it.
@@ -25,7 +36,7 @@ pub struct ExecutorConf {
 	///
 	/// For example "docker", or "host".
 	#[serde(rename = "type")]
-	typ: String,
+	typ: ExecutorType,
 	/// The parameters to this particular executor.
 	params: Option<HashMap<String, String>>,
 	/// The list of provided installed utilities.
@@ -59,7 +70,7 @@ impl ProvideConf {
 impl ExecutorConf {
 	/// Get the type of this executor.
 	#[must_use]
-	pub fn get_type(&self) -> &str {
+	pub fn get_type(&self) -> &ExecutorType {
 		&self.typ
 	}
 
@@ -78,6 +89,26 @@ impl ExecutorConf {
 	}
 }
 
+/// All of the possible types of locations that dev-loop supports fetching from.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Hash, Serialize)]
+pub enum LocationType {
+	/// Fetch from a path on the filesystem.
+	#[serde(rename = "path")]
+	Path,
+	/// Fetch from an HTTP(S) endpoint.
+	#[serde(rename = "http")]
+	HTTP,
+}
+
+impl std::fmt::Display for LocationType {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		match *self {
+			LocationType::Path => formatter.write_str("path"),
+			LocationType::HTTP => formatter.write_str("http"),
+		}
+	}
+}
+
 /// Describes a particular location that is _somewhere_ to read data from.
 /// For example a path on the filesystem, or a remote location over say HTTP.
 ///
@@ -90,7 +121,7 @@ pub struct LocationConf {
 	/// Currently the two supported values are: `http`, and `path`.
 	/// However, these could be expanded in the future.
 	#[serde(rename = "type")]
-	typ: String,
+	typ: LocationType,
 	/// The actual "place" of this location.
 	///
 	/// For a `path` type this is the place on the filesystem.
@@ -107,7 +138,7 @@ impl LocationConf {
 	///
 	/// This gives you an idea of how to handle the "at" value.
 	#[must_use]
-	pub fn get_type(&self) -> &str {
+	pub fn get_type(&self) -> &LocationType {
 		&self.typ
 	}
 
@@ -377,6 +408,34 @@ impl OneofOption {
 	}
 }
 
+/// All of the possible types of tasks that dev-loop supports executing.
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
+pub enum TaskType {
+	/// Represents a "command", or a task that actually executes a script.
+	#[serde(rename = "command")]
+	Command,
+	/// Represents a task that can be chosen.
+	#[serde(rename = "oneof")]
+	Oneof,
+	/// Represents a task that executes a series of steps in a specific order.
+	#[serde(rename = "pipeline")]
+	Pipeline,
+	/// Represents a task that executes multiple tasks at once.
+	#[serde(rename = "parallel-pipeline")]
+	ParallelPipeline,
+}
+
+impl std::fmt::Display for TaskType {
+	fn fmt(&self, formatter: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+		match *self {
+			TaskType::Command => formatter.write_str("command"),
+			TaskType::Oneof => formatter.write_str("oneof"),
+			TaskType::Pipeline => formatter.write_str("pipeline"),
+			TaskType::ParallelPipeline => formatter.write_str("parallel-pipeline"),
+		}
+	}
+}
+
 /// Represents the configuration for a singular task.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub struct TaskConf {
@@ -385,7 +444,7 @@ pub struct TaskConf {
 	/// The type of this task, currently these are: "command", "pipeline",
 	/// and "oneof".
 	#[serde(rename = "type")]
-	typ: Option<String>,
+	typ: Option<TaskType>,
 	/// The description of this task.
 	description: Option<String>,
 	/// The location of this task, this will only be used on a command type
@@ -425,11 +484,11 @@ impl TaskConf {
 
 	/// Get the type of this particular task.
 	#[must_use]
-	pub fn get_type(&self) -> &str {
+	pub fn get_type(&self) -> &TaskType {
 		if let Some(the_type) = &self.typ {
 			the_type
 		} else {
-			"command"
+			&TaskType::Command
 		}
 	}
 
@@ -486,13 +545,13 @@ impl TaskConf {
 		self.internal.unwrap_or(false)
 	}
 
-	/// Get the original path of this particular task. if it wasn't remote
+	/// Get the original path of this particular task.
 	#[must_use]
-	pub fn get_source_path(&self) -> Option<&str> {
+	pub fn get_source_path(&self) -> &str {
 		if let Some(sp) = &self.source_path {
-			Some(sp)
+			sp
 		} else {
-			None
+			""
 		}
 	}
 }

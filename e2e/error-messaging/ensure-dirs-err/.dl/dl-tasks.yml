@@ -1,0 +1,8 @@
+---
+tasks:
+  - name: echo
+    execution_needs: []
+    location:
+      type: path
+      at: echo.sh
+    tags: [echo]

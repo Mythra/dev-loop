@@ -1,0 +1,7 @@
+---
+default_executor:
+  type: host
+
+task_locations:
+  - type: path
+    at: .dl

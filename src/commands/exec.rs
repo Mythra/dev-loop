@@ -3,9 +3,10 @@
 //! most times, perhaps the only thing that comes close is list.
 
 use crate::{
-	config::types::TopLevelConf,
+	config::types::{TaskConf, TaskType, TopLevelConf},
 	executors::ExecutorRepository,
 	fetch::FetcherRepository,
+	strsim::add_did_you_mean_text,
 	tasks::{
 		execution::{
 			execute_tasks_in_parallel,
@@ -16,27 +17,106 @@ use crate::{
 		fs::ensure_dirs,
 		TaskGraph,
 	},
-	terminal::Term,
 };
+
+use color_eyre::{eyre::eyre, section::help::Help, Report, Result};
 use crossbeam_deque::Worker;
-use std::path::PathBuf;
-use tracing::error;
+use std::{collections::HashMap, path::PathBuf};
+
+/// Attempt to find simple replacement for an internal task.
+fn report_potential_internal_task_names<T>(
+	mut result: Result<T, Report>,
+	tasks: &HashMap<String, TaskConf>,
+	internal_task: &str,
+) -> Result<T, Report> {
+	let mut simple_tasks = Vec::new();
+
+	for (_, task_conf) in tasks {
+		if task_conf.is_internal() {
+			continue;
+		}
+
+		match *task_conf.get_type() {
+			TaskType::Oneof => {
+				if let Some(options) = task_conf.get_options() {
+					for option in options {
+						if option.get_task_name() == internal_task {
+							simple_tasks.push(task_conf);
+						}
+					}
+				}
+			}
+			TaskType::Pipeline | TaskType::ParallelPipeline => {
+				if let Some(steps) = task_conf.get_steps() {
+					for step in steps {
+						if step.get_task_name() == internal_task {
+							simple_tasks.push(task_conf);
+						}
+					}
+				}
+			}
+			_ => {}
+		}
+
+		// We don't want to print so many tasks it overwhelms the user.
+		if simple_tasks.len() > 2 {
+			simple_tasks.clear();
+			break;
+		}
+	}
+
+	if simple_tasks.is_empty() {
+		result = result.note("You can use the list subcommand to describe the tasks you can run, and find the one that you want.");
+	} else {
+		for simple_task in simple_tasks {
+			match *simple_task.get_type() {
+				TaskType::Oneof => {
+					// This unwrap is guaranteed to be safe .
+					for option in simple_task.get_options().unwrap() {
+						if option.get_task_name() == internal_task {
+							result = result.suggestion(format!(
+								"You can run the subcommand: `exec {} {}`",
+								simple_task.get_name(),
+								option.get_name()
+							));
+						}
+					}
+				}
+				TaskType::Pipeline | TaskType::ParallelPipeline => {
+					result = result.suggestion(format!(
+						"You can run the subcommand: `exec {}`",
+						simple_task.get_name()
+					));
+				}
+				_ => {}
+			}
+		}
+	}
+
+	result
+}
 
 /// Handle the "exec" command provided by dev loop.
 ///
-/// `config`: The top level config of dev-loop.
-/// `fetcher`: The thing that is capable of fetching locations.
-/// `terminal`: The thing that helps output to the terminal.
-/// `root_dir`: The root directory of the project.
-/// `args`: The extra arguments provided to the exec command.
+/// # Errors
+///
+/// - Can Error when no argument was provided.
+/// - Error constructing the `TaskGraph`.
+/// - Error finding the task the user wants to run/running an internal task.
+/// - Error creating directories that need to be ensured.
+/// - Error creating an executor/choosing an executor for tasks.
+/// - Error writing the helper scripts.
+/// - Error running the task.
 #[allow(clippy::cognitive_complexity)]
 pub async fn handle_exec_command(
 	config: &TopLevelConf,
 	fetcher: &FetcherRepository,
-	terminal: &Term,
 	args: &[String],
 	root_dir: &PathBuf,
-) -> i32 {
+) -> Result<()> {
+	let span = tracing::info_span!("exec");
+	let _guard = span.enter();
+
 	// The order of exec:
 	//
 	//  1. Validate we have a task to run:
@@ -51,54 +131,43 @@ pub async fn handle_exec_command(
 
 	// We need something to execute...
 	if args.is_empty() {
-		error!(
-			"Please specify a task name to exec! If you're unsure of the task name use the: `list` command in order to see all the tasks that can be run."
-		);
-		return 10;
+		return Err(eyre!("Please specify a task name to execute!",))
+			.suggestion("You can use the list subcommand to get a list of tasks you can execute.");
 	}
 	// We also need a valid TaskGraph...
-	let task_repo_res = TaskGraph::new(config, fetcher).await;
-	if let Err(task_err) = task_repo_res {
-		error!("Failed to construct the task graph: [{:?}]", task_err);
-		return 11;
-	}
-	let tasks = task_repo_res.unwrap().consume_and_get_tasks();
+	let tasks = TaskGraph::new(config, fetcher)
+		.await?
+		.consume_and_get_tasks();
 
 	// Now let's make sure we can actually run the task we need to.
 	let user_specified_task = &args[0];
 	if !tasks.contains_key(user_specified_task) {
-		error!(
-			"Unknown Task: [{}], please use the: `list` command in order to see all the tasks that can be run.",
-			user_specified_task
+		return add_did_you_mean_text(
+			Err(eyre!("There is no task named: [{}]", user_specified_task,)),
+			user_specified_task,
+			&tasks.keys().map(String::as_str).collect::<Vec<&str>>(),
+			3,
+			Some("You can use the list subcommand to get a list of tasks you can execute"),
 		);
-		return 12;
 	}
 	let selected_task = &tasks[user_specified_task];
 	if selected_task.is_internal() {
-		error!(
-			"Task: [{}] is marked as internal! Please use the `list` command in order to see all the tasks that can be run.",
-			user_specified_task
+		return report_potential_internal_task_names(
+			Err(eyre!(
+				"Task: [{}] is marked as internal! Please use the `list` command in order to see all the tasks that can be run.",
+				user_specified_task,
+			)),
+			&tasks,
+			user_specified_task,
 		);
-		return 13;
 	}
 
 	// Before we start preparing a task for execution, let's ensure all the necessary dirs are
 	// created.
-	let ensure_res = ensure_dirs(config, root_dir);
-	if ensure_res.is_err() {
-		return 14;
-	}
+	ensure_dirs(config, root_dir)?;
 
 	// Let's fetch all the executors so we know how to assign them to tasks.
-	let erepo_res = ExecutorRepository::new(config, fetcher, root_dir).await;
-	if let Err(erepo_err) = erepo_res {
-		error!(
-			"Failed to enumerate all possible executors: [{:?}]",
-			erepo_err,
-		);
-		return 15;
-	}
-	let mut erepo = erepo_res.unwrap();
+	let mut erepo = ExecutorRepository::new(config, fetcher, root_dir).await?;
 
 	// Generate the task execution order.
 	let pid = new_pipeline_id();
@@ -106,7 +175,7 @@ pub async fn handle_exec_command(
 	let task_size;
 	{
 		let mut worker_as_queue = WorkQueue::Queue(&mut worker);
-		let execution_list_res = build_ordered_execution_list(
+		task_size = build_ordered_execution_list(
 			&tasks,
 			selected_task,
 			fetcher,
@@ -116,21 +185,11 @@ pub async fn handle_exec_command(
 			pid,
 			&mut worker_as_queue,
 		)
-		.await;
-		if let Err(ele) = execution_list_res {
-			error!("Failed to generate a list of tasks to execute: [{:?}]", ele);
-			return 16;
-		}
-		task_size = execution_list_res.unwrap();
+		.await?;
 	}
 
 	// Finally fetch all the helpers...
-	let helpers_res = fetch_helpers(config, fetcher).await;
-	if let Err(helper_fetch_err) = helpers_res {
-		error!("Failed to fetch all the helpers: [{:?}]", helper_fetch_err);
-		return 17;
-	}
-	let helpers = helpers_res.unwrap();
+	let helpers = fetch_helpers(config, fetcher).await?;
 
 	let mut parallelism = num_cpus::get_physical();
 	if let Ok(env_var) = std::env::var("DL_WORKER_COUNT") {
@@ -139,16 +198,20 @@ pub async fn handle_exec_command(
 		}
 	}
 
-	let rc_res = execute_tasks_in_parallel(helpers, worker, task_size, terminal, parallelism).await;
-
-	match rc_res {
-		Ok(rc) => {
-			crate::executors::docker::DockerExecutor::clean().await;
-			rc
+	let res = execute_tasks_in_parallel(helpers, worker, task_size, parallelism).await;
+	// Don't clean if we encouter an error, aid in debugging.
+	match res {
+		Ok(exit_code) => {
+			if exit_code == 0 {
+				// Don't cause an error for cleaning if the task succeeded, the user can always clean manually.
+				let _ = crate::executors::docker::DockerExecutor::clean().await;
+				Ok(())
+			} else {
+				Err(eyre!(
+					"One of the tasks being run failed. You can use the logs above from your tasks to debug.",
+				)).note(format!("Failing exit code: {}", exit_code))
+			}
 		}
-		Err(err_code) => {
-			error!("Failed to execute tasks in parallel: [{:?}]", err_code);
-			10
-		}
+		Err(err_code) => Err(err_code),
 	}
 }

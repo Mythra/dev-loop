@@ -1,0 +1,38 @@
+---
+tasks:
+  - name: echo
+    description: a command level task
+    type: command
+    location:
+      type: path
+      at: echo.sh
+    tags: [tag_one, tag_two]
+
+  - name: internal-oneof
+    description: an internal oneof selection
+    type: oneof
+    internal: true
+    options:
+      - name: first
+        description: the first option
+        task: echo
+        args: ['a', 'b']
+    tags: [tag_two, tag_three]
+
+  - name: public-oneof
+    description: a public oneof
+    type: oneof
+    options:
+      - name: first
+        description: the first option
+        task: echo
+        args: ['c', 'd']
+      - name: second
+        description: the second option
+        task: internal-oneof
+        args: ['first']
+
+  - name: empty-oneof
+    description: an empty oneof
+    type: oneof
+    options: []

@@ -14,21 +14,32 @@ use crate::{
 		fs::ensure_dirs,
 		TaskGraph,
 	},
-	terminal::Term,
 };
+use color_eyre::{eyre::eyre, section::help::Help, Result};
 use crossbeam_deque::Worker;
 use std::path::PathBuf;
-use tracing::{error, info};
 
 /// Handle the "run" command provided by dev loop.
+///
+/// # Errors
+///
+/// - Can Error when no argument was provided.
+/// - Error constructing the `TaskGraph`.
+/// - Error finding the task the user wants to run/running an internal task.
+/// - Error creating directories that need to be ensured.
+/// - Error creating an executor/choosing an executor for tasks.
+/// - Error writing the helper scripts.
+/// - Error running the task.
 #[allow(clippy::cognitive_complexity)]
 pub async fn handle_run_command(
 	config: &TopLevelConf,
 	fetcher: &FetcherRepository,
-	terminal: &Term,
 	args: &[String],
 	root_dir: &PathBuf,
-) -> i32 {
+) -> Result<()> {
+	let span = tracing::info_span!("run");
+	let _guard = span.enter();
+
 	// The order of run:
 	//
 	// 1. Validate we have a series of tasks to run.
@@ -40,56 +51,41 @@ pub async fn handle_run_command(
 
 	// You need to tell us what to execute.
 	if args.is_empty() {
-		error!(
+		return Err(eyre!(
 			"Please specify a preset name to run! If you're unsure of the preset name use the: `list` command in order to see all the presets that can be run."
-		);
-		return 10;
+		));
 	}
 
 	// Find the list of tags to match on...
 	let presets_opt = config.get_presets();
 	if presets_opt.is_none() {
-		error!("No presets have been specified! Impossible to run any preset!");
-		return 11;
+		return Err(eyre!(
+			"You have configured no presets, so we cannot run a preset."
+		)).note("You can define presets in `.dl/config.yml`, the format is specified here: https://dev-loop.kungfury.io/docs/schemas/preset-conf");
 	}
 	let presets = presets_opt.unwrap();
 	let mut tags = Vec::new();
 	for preset in presets {
 		if preset.get_name() == args[0] {
-			info!("Found Preset: {}", args[0]);
 			tags = Vec::from(preset.get_tags());
 		}
 	}
 
 	// Now we also need a valid TaskGraph...
-	let task_repo_res = TaskGraph::new(config, fetcher).await;
-	if let Err(task_err) = task_repo_res {
-		error!("Failed to construct the task graph: [{:?}]", task_err);
-		return 12;
-	}
-	let tasks = task_repo_res.unwrap().consume_and_get_tasks();
+	let tasks = TaskGraph::new(config, fetcher)
+		.await?
+		.consume_and_get_tasks();
 
 	// Before we start preparing a task for execution, let's ensure all the necessary dirs are
 	// created.
-	let ensure_res = ensure_dirs(config, root_dir);
-	if ensure_res.is_err() {
-		return 13;
-	}
+	ensure_dirs(config, root_dir)?;
 
 	// Let's fetch all the executors so we know how to assign them to tasks.
-	let erepo_res = ExecutorRepository::new(config, fetcher, root_dir).await;
-	if let Err(erepo_err) = erepo_res {
-		error!(
-			"Failed to enumerate all possible executors: [{:?}]",
-			erepo_err,
-		);
-		return 14;
-	}
-	let mut erepo = erepo_res.unwrap();
+	let mut erepo = ExecutorRepository::new(config, fetcher, root_dir).await?;
 
 	// Let's build a list of tasks to execute.
 	let mut worker = Worker::new_fifo();
-	let execution_lanes_res = build_concurrent_execution_list(
+	let task_size = build_concurrent_execution_list(
 		&tasks,
 		&tags,
 		fetcher,
@@ -97,23 +93,10 @@ pub async fn handle_run_command(
 		root_dir.clone(),
 		&mut worker,
 	)
-	.await;
-	if let Err(execution_lane_err) = execution_lanes_res {
-		error!(
-			"Failed to generate a list of tasks to execute: [{:?}]",
-			execution_lane_err,
-		);
-		return 15;
-	}
-	let task_size = execution_lanes_res.unwrap();
+	.await?;
 
 	// Let's fetch all the helpers.
-	let helpers_res = fetch_helpers(config, fetcher).await;
-	if let Err(helper_fetch_err) = helpers_res {
-		error!("Failed to fetch all the helpers: [{:?}]", helper_fetch_err);
-		return 16;
-	}
-	let helpers = helpers_res.unwrap();
+	let helpers = fetch_helpers(config, fetcher).await?;
 
 	let mut parallelism = num_cpus::get_physical();
 	if let Ok(env_var) = std::env::var("DL_WORKER_COUNT") {
@@ -121,16 +104,23 @@ pub async fn handle_run_command(
 			parallelism = worker_count;
 		}
 	}
-	let rc_res = execute_tasks_in_parallel(helpers, worker, task_size, terminal, parallelism).await;
 
-	match rc_res {
-		Ok(rc) => {
-			crate::executors::docker::DockerExecutor::clean().await;
-			rc
+	let res = execute_tasks_in_parallel(helpers, worker, task_size, parallelism).await;
+
+	// Don't clean if we encouter an error, aid in debugging.
+	match res {
+		Ok(exit_code) => {
+			if exit_code == 0 {
+				// Don't cause an error for cleaning if the task succeeded, the user can always clean manually.
+				let _ = crate::executors::docker::DockerExecutor::clean().await;
+				Ok(())
+			} else {
+				Err(eyre!(
+					"One of the inner tasks returned a non-zero exit code: [{}], please use the logs to debug what went wrong.",
+					exit_code,
+				))
+			}
 		}
-		Err(err_code) => {
-			error!("Failed to execute tasks in parallel: [{:?}]", err_code);
-			10
-		}
+		Err(err_code) => Err(err_code),
 	}
 }

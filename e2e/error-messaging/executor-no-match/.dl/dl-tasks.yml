@@ -1,0 +1,9 @@
+---
+tasks:
+  - name: echo
+    execution_needs:
+      - name: my-super-cool-execution-need-that-is-tubular
+    location:
+      type: path
+      at: echo.sh
+    tags: [echo]

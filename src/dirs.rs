@@ -14,6 +14,27 @@ cfg_if::cfg_if! {
   }
 }
 
+/// Get the temporary directory for this host.
+#[must_use]
+pub fn get_tmp_dir() -> PathBuf {
+	// Mac OS X actually uses "TMPDIR" for a user specified temporary directory
+	// as opposed to `/tmp`. There are subtle differences between the two, and
+	// without getting into details the key thing is we should use it if it
+	// is set.
+	//
+	// We've seen numerous problems trying to use `/tmp` on OSX.
+	if let Ok(tmpdir_env) = std::env::var("TMPDIR") {
+		let pbte = PathBuf::from(tmpdir_env);
+		if pbte.is_dir() {
+			pbte
+		} else {
+			PathBuf::from("/tmp")
+		}
+	} else {
+		PathBuf::from("/tmp")
+	}
+}
+
 /// Calculate the home directory of a user.
 #[allow(clippy::items_after_statements)]
 #[must_use]

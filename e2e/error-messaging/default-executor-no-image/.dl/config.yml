@@ -1,0 +1,8 @@
+---
+default_executor:
+  type: docker
+  params: {}
+
+task_locations:
+  - type: path
+    at: .dl

@@ -14,7 +14,10 @@ fi
 rm -rf ./build/
 $DL_COMMAND exec exec-pipeline
 
+CACHED_DL_WORKER_COUNT="$DL_WORKER_COUNT"
+
 # Run with parallelism
+export DL_WORKER_COUNT=3
 $DL_COMMAND exec parallel-pipeline
 ppipeline_multi_data=$(< ./build/ppipeline/echo-nums)
 if [[ "$ppipeline_multi_data" != "1
@@ -33,7 +36,12 @@ rm -f ./build/ppipeline/echo-nums
 # Run without parallelism
 export DL_WORKER_COUNT=1
 $DL_COMMAND exec parallel-pipeline
-unset DL_WORKER_COUNT
+
+if [[ "x$CACHED_DL_WORKER_COUNT" == "x" ]]; then
+  unset DL_WORKER_COUNT
+else
+  export DL_WORKER_COUNT="$CACHED_DL_WORKER_COUNT"
+fi
 ppipeline_single_data=$(< ./build/ppipeline/echo-nums)
 if [[ "$ppipeline_single_data" != "1
 7

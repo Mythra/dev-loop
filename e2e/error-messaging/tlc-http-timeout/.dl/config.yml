@@ -1,0 +1,4 @@
+---
+task_locations:
+  - type: http
+    at: http://httpstat.us/200?sleep=50000
