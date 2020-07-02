@@ -50,26 +50,27 @@ enum Format {
 pub fn initialize_crate_logging() -> Result<()> {
 	let chosen_format = match std::env::var("RUST_LOG_FORMAT")
 		.as_ref()
-		.map(|s| s.as_str())
+		.map(String::as_str)
 	{
 		Ok("json") => Format::Json,
 		_ => Format::Text,
 	};
 
-	let chosen_level = match std::env::var("RUST_LOG_LEVEL").as_ref().map(|s| s.as_str()) {
+	let chosen_level = match std::env::var("RUST_LOG_LEVEL").as_ref().map(String::as_str) {
 		Ok("off") => LevelFilter::OFF,
 		Ok("error") => LevelFilter::ERROR,
 		Ok("warn") => LevelFilter::WARN,
-		Ok("info") => LevelFilter::INFO,
 		Ok("debug") => LevelFilter::DEBUG,
 		Ok("trace") => LevelFilter::TRACE,
 		_ => LevelFilter::INFO,
 	};
 
-	let add_spantrace = std::env::var("RUST_BACKTRACE").unwrap_or_default().len() > 0
-		|| std::env::var("RUST_LIB_BACKTRACE")
+	let add_spantrace = !std::env::var("RUST_BACKTRACE")
+		.unwrap_or_default()
+		.is_empty()
+		|| !std::env::var("RUST_LIB_BACKTRACE")
 			.unwrap_or_default()
-			.len() > 0;
+			.is_empty();
 
 	let filter_layer = EnvFilter::from_default_env().add_directive(chosen_level.into());
 	let fmt_layer = fmt_layer().with_target(false);

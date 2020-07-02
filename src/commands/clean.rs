@@ -8,6 +8,11 @@ use crate::executors::{docker::DockerExecutor, host::HostExecutor};
 use color_eyre::Result;
 use tracing::info;
 
+/// Execute the clean command.
+///
+/// # Errors
+///
+/// - When one of the underlying executor cleanups fail.
 pub async fn handle_clean_command() -> Result<()> {
 	let span = tracing::info_span!("clean");
 	let _guard = span.enter();

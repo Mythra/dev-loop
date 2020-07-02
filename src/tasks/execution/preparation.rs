@@ -143,13 +143,17 @@ async fn command_to_executable_task(
 				"Couldn't find a viable executor for: [{}]",
 				task.get_name()
 			))
-			.suggestion("Please check the `execution_needs` to ensure it can match with an executor.");
+			.suggestion(
+				"Please check the `execution_needs` to ensure it can match with an executor.",
+			);
 		} else {
 			return Err(eyre!(
 				"Couldn't find a viable executor for: [{}]",
 				task.get_name(),
 			))
-			.suggestion("Check that the `default_executor` has been defined, and loaded successfully.");
+			.suggestion(
+				"Check that the `default_executor` has been defined, and loaded successfully.",
+			);
 		}
 	}
 	let selected_executor = selected_executor.unwrap();

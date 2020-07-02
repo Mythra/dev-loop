@@ -5,7 +5,8 @@
 
 use crate::{
 	config::types::{
-		ExecutorConf, ExecutorConfFile, ExecutorType, LocationType, NeedsRequirement, TaskConf, TopLevelConf,
+		ExecutorConf, ExecutorConfFile, ExecutorType, LocationType, NeedsRequirement, TaskConf,
+		TopLevelConf,
 	},
 	fetch::FetcherRepository,
 	tasks::execution::preparation::ExecutableTask,
@@ -119,13 +120,17 @@ impl ExecutorRepository {
 	/// Create a new repository for holding executors.
 	/// Ideally there should only ever be one of these in the program at a time.
 	///
-	/// `tlc`: The "TopLevelConfiguration", or thing that outlines where to fetch
+	/// `tlc`: The `TopLevelConfiguration`, or thing that outlines where to fetch
 	///        executors from.
-	/// `fr`: The "FetcherRepository", or thing that is going to allow us to discover
+	/// `fr`: The `FetcherRepository`, or thing that is going to allow us to discover
 	///       our executors.
 	/// `rd`: The root directory for Dev-Loop
+	///
+	/// # Errors
+	///
+	/// - When there is an error fetching the executor yaml files from disk.
+	/// - When the executor yaml files contain invalid yaml.
 	#[allow(clippy::cognitive_complexity, clippy::map_entry)]
-	#[must_use]
 	pub async fn new(tlc: &TopLevelConf, fr: &FetcherRepository, rd: &PathBuf) -> Result<Self> {
 		// Keep track of any executors we can construct outside of a custom_executor
 		// for a task. Which will be constructed when the task is run.
@@ -457,7 +462,7 @@ impl ExecutorRepository {
 				let provides = conf.get_provided();
 				let de = docker::DockerExecutor::new(rd, &params, &provides, None)?;
 				Ok((de.get_container_name().to_owned(), Arc::new(de)))
-			},
+			}
 		};
 
 		ret_v

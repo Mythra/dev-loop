@@ -31,7 +31,7 @@ fn report_potential_internal_task_names<T>(
 ) -> Result<T, Report> {
 	let mut simple_tasks = Vec::new();
 
-	for (_, task_conf) in tasks {
+	for task_conf in tasks.values() {
 		if task_conf.is_internal() {
 			continue;
 		}
@@ -209,7 +209,8 @@ pub async fn handle_exec_command(
 			} else {
 				Err(eyre!(
 					"One of the tasks being run failed. You can use the logs above from your tasks to debug.",
-				)).note(format!("Failing exit code: {}", exit_code))
+				))
+				.note(format!("Failing exit code: {}", exit_code))
 			}
 		}
 		Err(err_code) => Err(err_code),

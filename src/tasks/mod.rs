@@ -32,15 +32,20 @@ pub struct TaskGraph {
 }
 
 impl TaskGraph {
-	/// Create a new TaskGraph.
+	/// Create a new `TaskGraph`.
 	///
 	/// NOTE: this will completely parse all the task files (remote or otherwise),
 	/// and can generally be considered to be one of the longer tasks within dev-loop.
 	///
 	/// `tlc`: The parsed top level config to start fetching tasks from.
 	/// `fetcher`: The repository of fetchers.
-	#[allow(clippy::cognitive_complexity)]
-	#[must_use]
+	///
+	/// # Errors
+	///
+	/// - When there is an error fetching the tasks yaml files.
+	/// - When the task yaml files are invalid yaml.
+	/// - When the task yaml file has some sort of invariant error.
+	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub async fn new(tlc: &TopLevelConf, fetcher: &FetcherRepository) -> Result<Self> {
 		let span = tracing::info_span!("finding_tasks");
 		let _guard = span.enter();

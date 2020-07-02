@@ -72,6 +72,10 @@ fn find_and_open_project_config() -> Option<(File, PathBuf)> {
 }
 
 /// Attempt to fetch the top level project configuration for this project.
+///
+/// # Errors
+///
+/// - When there is error doing a file read on a found configuration file.
 pub fn get_top_level_config() -> Result<Option<types::TopLevelConf>> {
 	let config_fh_opt = find_and_open_project_config();
 	if config_fh_opt.is_none() {
