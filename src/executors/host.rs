@@ -7,14 +7,19 @@ use crate::{
 	executors::{CompatibilityStatus, Executor},
 	tasks::execution::preparation::ExecutableTask,
 };
+
 use async_std::{
 	fs::{read_dir, remove_dir_all},
 	prelude::*,
 };
-use color_eyre::{eyre::eyre, section::help::Help, Result};
+use color_eyre::{
+	eyre::{eyre, WrapErr},
+	section::help::Help,
+	Result,
+};
 use crossbeam_channel::Sender;
 use std::{
-	io::{BufRead, BufReader},
+	io::{BufRead, BufReader, Error as IoError},
 	path::PathBuf,
 	process::{Command, Stdio},
 	sync::{
@@ -23,6 +28,39 @@ use std::{
 	},
 };
 use tracing::{debug, error};
+
+/// Determine if an error is an "ETXTFILEBUSY" error, e.g. someone
+/// else is actively executing bash.
+fn is_etxtfilebusy(os_err: &IoError) -> bool {
+	if cfg!(target_os = "macos")
+		|| cfg!(target_os = "ios")
+		|| cfg!(target_os = "linux")
+		|| cfg!(target_os = "android")
+		|| cfg!(target_os = "freebsd")
+		|| cfg!(target_os = "dragonfly")
+		|| cfg!(target_os = "openbsd")
+		|| cfg!(target_os = "netbsd")
+	{
+		if let Some(os_err_code) = os_err.raw_os_error() {
+			// This stands for ETXTBUSY, since it's pretty weird to match on
+			// message of rust.
+			//
+			// This seems to be correct for all OSs, listed above.
+			//  - Linux: https://mariadb.com/kb/en/operating-system-error-codes/
+			//  - OSX/iOS: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/intro.2.html
+			//  - FreeBSD: https://www.freebsd.org/cgi/man.cgi?query=errno&sektion=2&manpath=freebsd-release-ports
+			//  - Android: https://android.googlesource.com/kernel/lk/+/dima/for-travis/include/errno.h
+			//  - DragonflyBSD: https://man.dragonflybsd.org/?command=errno&section=2
+			//  - OpenBSD: https://man.openbsd.org/errno.2
+			//  - NetBSD: https://netbsd.gw.com/cgi-bin/man-cgi?errno+2+NetBSD-6.0
+			if os_err_code == 26 {
+				return true;
+			}
+		}
+	}
+
+	false
+}
 
 /// Represents the actual executor for the host system.
 #[derive(Debug)]
@@ -122,14 +160,17 @@ impl HostExecutor {
 		//  to something like `sh` (e.g.: `alias bash="sh"`) which would break
 		//  scripts potentially. if they do try to do this the "hash" command
 		//  will not properly since it is not an actual binary.
-		if Command::new("bash")
-			.args(&["-c", "\"hash bash\""])
-			.output()
-			.is_ok()
-		{
-			CompatibilityStatus::Compatible
-		} else {
-			CompatibilityStatus::CouldBeCompatible("install bash".to_owned())
+
+		match Command::new("bash").args(&["-c", "\"hash bash\""]).output() {
+			Ok(_) => CompatibilityStatus::Compatible,
+			Err(os_err) => {
+				if is_etxtfilebusy(&os_err) {
+					// Tail recurse.
+					return Self::is_compatible();
+				}
+
+				CompatibilityStatus::CouldBeCompatible("install bash".to_owned())
+			}
 		}
 	}
 }
@@ -245,14 +286,31 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 		let entrypoint_as_str = tmp_path.to_str().unwrap();
 
 		// Spawn the task.
-		let command_res = Command::new(entrypoint_as_str)
+		let mut command_res = Command::new(entrypoint_as_str)
 			.stdin(Stdio::null())
 			.stdout(Stdio::piped())
 			.stderr(Stdio::piped())
 			.spawn();
-		if let Err(command_err) = command_res {
-			error!("Failed to spawn bash command: [{:?}]", command_err);
-			return 10;
+		while let Err(command_err) = command_res {
+			if is_etxtfilebusy(&command_err) {
+				// Respawn the command again!
+				command_res = Command::new(entrypoint_as_str)
+					.stdin(Stdio::null())
+					.stdout(Stdio::piped())
+					.stderr(Stdio::piped())
+					.spawn();
+			} else {
+				error!(
+					"{:?}",
+					Err::<(), IoError>(command_err)
+						.wrap_err("Failed to run bash script on the host system")
+						.note(format!(
+							"The script is located at: [{:?}]",
+							entrypoint_as_str
+						))
+				);
+				return 10;
+			}
 		}
 		let mut child = command_res.unwrap();
 
