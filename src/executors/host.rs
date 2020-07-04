@@ -95,8 +95,6 @@ impl HostExecutor {
 	/// Performs a clean up of all host resources.
 	#[allow(clippy::cognitive_complexity)]
 	pub async fn clean() {
-		// TODO(cynthia): improve logs here.
-
 		// To clean all we would possibly have leftover is files in $TMPDIR.
 		// So we iterate through everything in the temporary directory...
 		if let Ok(mut entries) = read_dir(get_tmp_dir()).await {
@@ -106,7 +104,10 @@ impl HostExecutor {
 					let entry = entry_de.path();
 					// If it's not a directory ignore it.
 					if !entry.is_dir().await {
-						debug!("Skipping entry, is not directory: [{:?}]", entry);
+						debug!(
+							"Found a non-directory in your temporary directory, skipping: [{:?}]",
+							entry
+						);
 						continue;
 					}
 					// If it's not UTF-8 ignore it. We can't do a string comparison, and
@@ -114,7 +115,7 @@ impl HostExecutor {
 					let potential_str = entry.to_str();
 					if potential_str.is_none() {
 						debug!(
-							"Skipping entry, cannot turn into a UTF-8 String: [{:?}]",
+							"Found a non utf8 path in your temporary directory: [{:?}], dev-loop is guaranteed to place utf8 directories, so skipping.",
 							entry,
 						);
 						continue;
@@ -125,7 +126,7 @@ impl HostExecutor {
 					// identifier of dev-loop host executor?
 					if !entry_str.ends_with("-dl-host") {
 						debug!(
-							"Skipping entry, does not appear to be a dev-loop temporary folder: [{:?}] (ends with -dl-host)",
+							"Skipping entry: [{:?}] does not appear to be a dev-loop temporary directory (dev-loop dirs end with -dl-host)",
 							entry,
 						);
 						continue;
@@ -134,9 +135,12 @@ impl HostExecutor {
 					// If it is... remove the directory and everything underneath it.
 					if let Err(remove_err) = remove_dir_all(&entry).await {
 						error!(
-							"Failed to cleanup temporary directory: [{:?}] due to : [{:?}] trying to continue.",
-							entry,
-							remove_err,
+							"{:?}",
+							Err::<(), IoError>(remove_err)
+								.wrap_err("Failed to clean temporary directory, trying to continue")
+								.suggestion(
+									format!("Try removing the directory manually with the command: `sudo rm -rf {}`", entry.to_string_lossy())
+								).unwrap_err()
 						);
 					}
 				}
@@ -273,13 +277,17 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 			use std::os::unix::fs::PermissionsExt;
 			let executable_permissions = std::fs::Permissions::from_mode(0o777);
 
-			if let Err(exec_err) =
-				std::fs::set_permissions(&tmp_path, executable_permissions.clone())
-			{
-				error!("Failed to mark entrypoint as executable: [{:?}]", exec_err);
+			if let Err(permission_err) = std::fs::set_permissions(&tmp_path, executable_permissions.clone()).wrap_err(
+				"Failed to mark temporary path as world-wide readable/writable/executable."
+			).suggestion("If the error isn't immediately clear, please file an issue as it's probably a bug in dev-loop with your system.") {
+				error!("{:?}", permission_err);
+				return 10;
 			}
-			if let Err(exec_err) = std::fs::set_permissions(&regular_task, executable_permissions) {
-				error!("Failed to mark task file as executable: [{:?}]", exec_err);
+			if let Err(permission_err) = std::fs::set_permissions(&regular_task, executable_permissions).wrap_err(
+				"Failed to mark task file as world-wide readable/writable/executable."
+			).suggestion("If the error isn't immediately clear, please file an issue as it's probably a bug in dev-loop with your system.") {
+				error!("{:?}", permission_err);
+				return 10;
 			}
 		}
 
@@ -304,10 +312,8 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 					"{:?}",
 					Err::<(), IoError>(command_err)
 						.wrap_err("Failed to run bash script on the host system")
-						.note(format!(
-							"The script is located at: [{:?}]",
-							entrypoint_as_str
-						))
+						.note(format!("The script is located at: [{}]", entrypoint_as_str,))
+						.unwrap_err()
 				);
 				return 10;
 			}

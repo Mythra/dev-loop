@@ -79,21 +79,21 @@ use tracing::{debug, error, info, warn};
 /// why we use it as opposed to using a terminal command (not to mention we
 /// don't have to worry about escaping correctly).
 ///
-/// `v1.30` is chosen because as of the time of writing this
-/// `v1.30` is the version for Docker Engine 17.06, which at
-/// the time of writing this (January 7th, 2020) is the lowest supported
+/// `v1.40` is chosen because as of the time of writing this
+/// `v1.40` is the version for Docker Engine 19.03, which at
+/// the time of writing this (July 3rd, 2020) is the lowest supported
 /// version according to docker:
 ///
 /// <https://success.docker.com/article/compatibility-matrix>
 ///
 /// We can bump this in the future when we know it won't run into anyone.
-const DOCKER_API_VERSION: &str = "/v1.30";
+const DOCKER_API_VERSION: &str = "/v1.40";
 
 cfg_if::cfg_if! {
   if #[cfg(unix)] {
 		const SOCKET_PATH: &str = "/var/run/docker.sock";
   } else if #[cfg(win)] {
-		// TODO(cynthia): named pipes? url?
+		// TODO(xxx): named pipes? url?
 		const SOCKET_PATH: &str = "UNIMPLEMENTED";
   }
 }
@@ -182,7 +182,8 @@ impl DockerExecutor {
 			return Err(eyre!(
 				"Failed to turn the temporary directory: [{:?}] into a utf8-string.",
 				tmp_dir,
-			)).suggestion("Please ensure the environment variable TMPDIR is set to a temporary directory that is valid UTF-8.");
+			)).suggestion("Please change the environment variable TMPDIR to a path that is a UTF-8 only file path.")
+				.note("You can also unset it if you have a `/tmp` directory.");
 		}
 		let pr_as_string = project_root.to_str();
 		if pr_as_string.is_none() {

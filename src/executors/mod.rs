@@ -368,8 +368,6 @@ impl ExecutorRepository {
 				}
 			}
 
-			// TODO(cynthia): report on execution needs specifically that don't match.
-			// TODO(cynthia): check for typos in matching statements too.
 			error!(
 				"Cannot find a way to run: [{}] please check the `execution_needs` fields for the task in: [{}]",
 				task.get_name(),

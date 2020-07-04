@@ -154,7 +154,7 @@ pub async fn handle_exec_command(
 	if selected_task.is_internal() {
 		return report_potential_internal_task_names(
 			Err(eyre!(
-				"Task: [{}] is marked as internal! Please use the `list` command in order to see all the tasks that can be run.",
+				"Internal Task: [{}] cannot be run directly.",
 				user_specified_task,
 			)),
 			&tasks,
