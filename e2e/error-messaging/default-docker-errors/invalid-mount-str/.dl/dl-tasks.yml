@@ -1,7 +1,7 @@
 ---
 tasks:
   - name: echo
+    description: echo a string
     location:
       type: path
       at: echo.sh
-    tags: [echo]

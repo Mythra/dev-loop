@@ -26,7 +26,7 @@ use std::{
 	path::PathBuf,
 	sync::{atomic::AtomicBool, Arc, RwLock},
 };
-use tracing::{debug, error};
+use tracing::{debug, warn};
 use twox_hash::{RandomXxHashBuilder64, XxHash64};
 
 /// Describes the compatibility status of a particular Executor.
@@ -157,7 +157,7 @@ impl ExecutorRepository {
 					executors.insert("default".to_owned(), executor);
 					debug!("Inserted 'default' executor.");
 				}
-				Err(err) => error!("{:?}", err),
+				Err(err) => warn!("{:?}", err),
 			}
 		}
 
@@ -175,8 +175,8 @@ impl ExecutorRepository {
 				// operations are most likely to fail, so just fail fast.
 				if let Err(err) = resulting_fetched_executors {
 					if exec_location.get_type() == &LocationType::HTTP {
-						error!("{:?}", err);
-						error!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
+						warn!("{:?}", err);
+						warn!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
 						continue;
 					} else {
 						return Err(err.wrap_err(format!(
@@ -207,7 +207,7 @@ impl ExecutorRepository {
 					{
 						let exec_res = Self::instantiate_executor(rd, &econf).await;
 						if let Err(exec_init_err) = exec_res {
-							error!(
+							warn!(
 								"Failed to initialize executor #{} from: [{}] due to: {:?}. Will not be choosing.",
 								idx + 1,
 								exec_conf_file.get_source(),
@@ -261,8 +261,8 @@ impl ExecutorRepository {
 		// Then we need to keep track of who's running for reuse selection first.
 		let repo = self.repo.write();
 		if let Err(repo_err) = repo {
-			error!(
-				"Internal Error, please report as an issue. Maintainer Info: [repo_write_mutex_failure: {:?}]",
+			warn!(
+				"Unknown State creating executor, please report as an issue. Maintainer Info: [repo_write_mutex_failure: {:?}]",
 				repo_err,
 			);
 			return None;
@@ -270,8 +270,8 @@ impl ExecutorRepository {
 		let mut repo = repo.unwrap();
 		let active_executors = self.active_executors.write();
 		if let Err(ae_err) = active_executors {
-			error!(
-				"Internal Error, please report as an issue. Maintainer Info: [active_executors_mutex_failure: {:?}]",
+			warn!(
+				"Unknown State creating executor, please report as an issue. Maintainer Info: [active_executors_mutex_failure: {:?}]",
 				ae_err,
 			);
 			return None;
@@ -302,7 +302,7 @@ impl ExecutorRepository {
 				Self::instantiate_executor(&self.root_dir, custom_executor_config).await;
 
 			if let Err(resulting_err) = resulting_executor {
-				error!(
+				warn!(
 					"Failed to construct custom executor for task: [{}] defined in: [{}] due to: {:?}",
 					task.get_name(),
 					task.get_source_path(),
@@ -368,7 +368,7 @@ impl ExecutorRepository {
 				}
 			}
 
-			error!(
+			warn!(
 				"Cannot find a way to run: [{}] please check the `execution_needs` fields for the task in: [{}]",
 				task.get_name(),
 				task.get_source_path(),
@@ -381,7 +381,7 @@ impl ExecutorRepository {
 			debug!("Selecting Default executor for task: [{}]", task.get_name());
 			Some(repo.get("default").unwrap().clone())
 		} else {
-			error!(
+			warn!(
 				"Cannot find a way to run: [{}] defined in: [{}], did not specify a `custom_executor`/`execution_needs`, and a valid default executor has not been defined.",
 				task.get_name(),
 				task.get_source_path(),
@@ -424,14 +424,20 @@ impl ExecutorRepository {
 					CompatibilityStatus::Compatible => {}
 					CompatibilityStatus::CouldBeCompatible(how_to_install) => {
 						return Err(eyre!(
-							"The host executor is not currently compatible with this system. To get it compatible you should: {}",
-							how_to_install,
+							"The host executor is not currently compatible with this system.",
+						))
+						.suggestion(format!(
+							"To get docker-executor compatible: {}",
+							how_to_install
 						));
 					}
 					CompatibilityStatus::CannotBeCompatible(potential_help) => {
 						return Err(eyre!(
-							"The host executor could never be compatible with this system. The help text is provided: {:?}",
-							potential_help,
+							"The host executor can never be compatible with this system.",
+						))
+						.note(format!(
+							"The reasoning provided for why this would never work is: {}",
+							potential_help.unwrap_or_default()
 						));
 					}
 				}
@@ -444,14 +450,20 @@ impl ExecutorRepository {
 					CompatibilityStatus::Compatible => {}
 					CompatibilityStatus::CouldBeCompatible(how_to_install) => {
 						return Err(eyre!(
-							"The docker executor is not currently compatible with this system. To get it compatible you should: {}",
-							how_to_install,
+							"The docker executor is not currently compatible with this system.",
+						))
+						.suggestion(format!(
+							"To get docker-executor compatible: {}",
+							how_to_install
 						));
 					}
 					CompatibilityStatus::CannotBeCompatible(potential_help) => {
 						return Err(eyre!(
-							"The docker executor could never be compatible with this system. The help text is provided: {:?}",
-							potential_help,
+							"The docker executor can never be compatible with this system.",
+						))
+						.note(format!(
+							"The reasoning provided for why this would never work is: {}",
+							potential_help.unwrap_or_default()
 						));
 					}
 				}

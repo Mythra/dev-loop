@@ -7,7 +7,7 @@
 use crate::config::types::TopLevelConf;
 
 use color_eyre::{eyre::eyre, section::help::Help, Report};
-use tracing::error;
+use tracing::warn;
 
 pub mod commands;
 pub mod config;
@@ -59,7 +59,7 @@ fn main() -> Result<(), Report> {
 		//
 		// Because list/clean still wants to be run even with no configuration
 		// we print it out here, and exec/run assume it's printed here.
-		error!(
+		warn!(
 			"{:?}\n",
 			tlc_err.wrap_err(
 				"Invalid YAML Configuration, you will need a valid one if you want to run dev-loop"

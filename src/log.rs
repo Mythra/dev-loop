@@ -65,12 +65,18 @@ pub fn initialize_crate_logging() -> Result<()> {
 		_ => LevelFilter::INFO,
 	};
 
-	let add_spantrace = !std::env::var("RUST_BACKTRACE")
-		.unwrap_or_default()
-		.is_empty()
-		|| !std::env::var("RUST_LIB_BACKTRACE")
+	let add_spantrace =
+		!std::env::var("RUST_BACKTRACE")
+			.unwrap_or_default()
+			.is_empty() || !std::env::var("RUST_LIB_BACKTRACE")
+			.unwrap_or_default()
+			.is_empty() || !std::env::var("RUST_SPANTRACE")
 			.unwrap_or_default()
 			.is_empty();
+
+	if !add_spantrace {
+		std::env::set_var("RUST_SPANTRACE", "0");
+	}
 
 	let filter_layer = EnvFilter::from_default_env().add_directive(chosen_level.into());
 	let fmt_layer = fmt_layer().with_target(false);

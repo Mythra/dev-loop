@@ -1,0 +1,7 @@
+---
+executor_locations:
+  - type: path
+    at: .dl
+task_locations:
+  - type: path
+    at: .dl

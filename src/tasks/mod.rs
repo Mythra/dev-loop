@@ -15,7 +15,7 @@ use color_eyre::{
 	Result,
 };
 use std::collections::{HashMap, HashSet};
-use tracing::error;
+use tracing::warn;
 
 pub mod execution;
 pub mod fs;
@@ -83,11 +83,11 @@ impl TaskGraph {
 				// well than something really bad is going on that we don't want to handle.
 				if let Err(err) = resulting_fetched_tasks {
 					if task_location.get_type() == &LocationType::HTTP {
-						error!("{:?}", err);
-						error!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
+						warn!("{:?}", err);
+						warn!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
 						allowing_dag_errors = true;
 					} else {
-						error!("Failed to fetch a file from the filesystem! Assuming this is a critical error.");
+						warn!("Failed to fetch a file from the filesystem! Assuming this is a critical error.");
 						return Err(err.wrap_err(format!(
 							"Failed to read the file: [{}] from the filesystem",
 							task_location.get_at()
@@ -102,8 +102,8 @@ impl TaskGraph {
 						serde_yaml::from_slice::<TaskConfFile>(&task_conf_file.get_contents());
 					if let Err(tye) = task_yaml_res {
 						if task_location.get_type() == &LocationType::HTTP {
-							error!("{:?}", tye,);
-							error!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
+							warn!("{:?}", tye,);
+							warn!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
 							allowing_dag_errors = true;
 							continue;
 						}

@@ -1,0 +1,7 @@
+---
+executors:
+  - type: docker
+    params:
+      name_prefix: lol-
+    provides:
+      - name: linux

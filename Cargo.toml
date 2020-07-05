@@ -18,8 +18,7 @@ async-std = { version = "^1.5", features = ["attributes"] }
 async-trait = "^0.1"
 atty = "^0.2"
 colored = "^1.9"
-# TODO(xxx): go back to upstream once: https://github.com/yaahc/color-eyre/issues/32
-color-eyre = { version = "^0.4", default-features = false, features = [] }
+color-eyre = "^0.4.2"
 crossbeam-channel = "^0.4"
 crossbeam-deque = "^0.7"
 cfg-if = "^0.1"

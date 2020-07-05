@@ -27,7 +27,7 @@ use std::{
 		Arc,
 	},
 };
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 /// Determine if an error is an "ETXTFILEBUSY" error, e.g. someone
 /// else is actively executing bash.
@@ -134,7 +134,7 @@ impl HostExecutor {
 
 					// If it is... remove the directory and everything underneath it.
 					if let Err(remove_err) = remove_dir_all(&entry).await {
-						error!(
+						warn!(
 							"{:?}",
 							Err::<(), IoError>(remove_err)
 								.wrap_err("Failed to clean temporary directory, trying to continue")

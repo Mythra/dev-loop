@@ -1,0 +1,9 @@
+---
+default_executor:
+  type: docker
+  params:
+    image: ubuntu:18.04
+
+task_locations:
+  - type: path
+    at: .dl

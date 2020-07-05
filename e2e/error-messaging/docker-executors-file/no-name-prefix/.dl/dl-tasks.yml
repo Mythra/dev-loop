@@ -1,0 +1,9 @@
+---
+tasks:
+  - name: echo
+    execution_needs:
+      - name: linux
+    description: echo a string
+    location:
+      type: path
+      at: echo.sh

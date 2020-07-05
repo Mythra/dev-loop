@@ -5,10 +5,10 @@
 //! Those validations happen at different stages within the program.
 
 use crate::yaml_err::contextualize_yaml_err;
-use color_eyre::{section::help::Help, Result};
+use color_eyre::{eyre::WrapErr, section::help::Help, Result};
 use std::{
 	fs::{canonicalize, File},
-	io::Read,
+	io::{Error as IoError, Read},
 	path::PathBuf,
 };
 use tracing::{error, trace};
@@ -28,7 +28,10 @@ pub fn get_project_root() -> Option<PathBuf> {
 	// all the way up.
 	let current_dir_res = std::env::current_dir().and_then(canonicalize);
 	if let Err(finding_dir) = current_dir_res {
-		error!("Failed to get the current directory: [{:?}]", finding_dir);
+		error!(
+			"{:?}",
+			Err::<(), IoError>(finding_dir).wrap_err("Failed to find the current directory.").suggestion("Please file an issue for support, if the underlying cause is not immediately clear.").unwrap_err(),
+		);
 		return None;
 	}
 	let mut current_dir = current_dir_res.unwrap();

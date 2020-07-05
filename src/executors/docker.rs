@@ -54,7 +54,7 @@ use crate::{
 use color_eyre::{
 	eyre::{eyre, WrapErr},
 	section::help::Help,
-	Result,
+	Report, Result,
 };
 use crossbeam_channel::Sender;
 use isahc::{config::VersionNegotiation, prelude::*, HttpClient, HttpClientBuilder};
@@ -209,7 +209,10 @@ impl DockerExecutor {
 		if let Some(user_specified_prefix) = executor_args.get("name_prefix") {
 			container_name += user_specified_prefix;
 		} else {
-			return Err(eyre!("Docker Executor requires a `name_prefix` field!"));
+			return Err(eyre!(
+				"Docker Executor requires a `name_prefix` field to know how to name containers!"
+			)).suggestion("Add a `name_prefix` field to `params` that specifys the name prefix for containers")
+				.note("You can find the full list of arguments here: https://dev-loop.kungfury.io/docs/schemas/executor-conf");
 		}
 		container_name += &random_str;
 
@@ -219,7 +222,8 @@ impl DockerExecutor {
 		} else {
 			return Err(eyre!(
 				"Docker Executor requires an `image` to know which docker image to use."
-			));
+			)).suggestion("Add an `image` field to `params` that specifys the docker image to use.")
+				.note("You can find the full list of arguments here: https://dev-loop.kungfury.io/docs/schemas/executor-conf");
 		}
 
 		let mut group_id = 0;
@@ -299,7 +303,15 @@ impl DockerExecutor {
 				.filter_map(|item| {
 					let mounts = item.split(':').collect::<Vec<&str>>();
 					if mounts.len() != 2 {
-						error!("Invalid Mount String: [{}] skipping...", item);
+						warn!(
+							"{:?}",
+							Err::<(), Report>(eyre!(
+								"Mount String for Docker Executor: [{}] is invalid, missing path for container. Will not mount.",
+								item,
+							))
+							.note("Mounts should be in the format: `host_path:path_in_container`")
+							.unwrap_err()
+						);
 						return None;
 					}
 
@@ -310,13 +322,26 @@ impl DockerExecutor {
 						if src.starts_with('~') {
 							let potential_home_dir = crate::dirs::home_dir();
 							if potential_home_dir.is_none() {
-								error!("Failed to find home directory! Skipping Mount!");
+								warn!(
+									"{:?}",
+									Err::<(), Report>(eyre!(
+										"Mount String: [{}] for Docker Executor's source path is relative to the home directory, but the home directory couldn't be found. Will not mount.",
+										item,
+									))
+									.suggestion("You can manually specify the home directory with the `HOME` environment variable.")
+									.unwrap_err()
+								);
 								return None;
 							}
 							let home_dir = potential_home_dir.unwrap();
 							let home_dir = home_dir.to_str();
 							if home_dir.is_none() {
-								error!("Failed to turn home directory into a utf8 string! Skipping Mount!");
+								warn!(
+									"{:?}",
+									Err::<(), Report>(eyre!(
+										"Home directory is not set to a UTF-8 only string."
+									)).note("If you're not sure how to solve this error, please open an issue.").unwrap_err(),
+								);
 								return None;
 							}
 							let home_dir = home_dir.unwrap();
@@ -330,7 +355,14 @@ impl DockerExecutor {
 
 					let src_as_pb = std::path::PathBuf::from(&src);
 					if !src_as_pb.exists() {
-						error!("Mount src: [{}] does not exist! Skipping Mount!", src);
+						warn!(
+							"{:?}",
+							Err::<(), Report>(eyre!(
+								"Mount String: [{}] specified a source directory: [{}] that does not exist. Will not mount.",
+								item,
+								src,
+							)).unwrap_err(),
+						);
 						return None;
 					}
 
@@ -340,7 +372,7 @@ impl DockerExecutor {
 		}
 
 		let client = if cfg!(target_os = "windows") {
-			// TODO(cynthia): set windows named pipe/url
+			// TODO(xxx): set windows named pipe/url
 			HttpClientBuilder::new()
 				.version_negotiation(VersionNegotiation::http11())
 				.build()
@@ -1452,10 +1484,10 @@ impl Executor for DockerExecutor {
 				let log_permissions = std::fs::Permissions::from_mode(0o666);
 
 				if std::fs::set_permissions(&stdout_log_path, log_permissions.clone()).is_err() {
-					error!("Failed to mark stdout_log as world writable! May cause errors if using a lower-priveleged user!");
+					warn!("Failed to mark stdout_log as world writable! May cause errors if using a lower-priveleged user!");
 				}
 				if std::fs::set_permissions(&stderr_log_path, log_permissions).is_err() {
-					error!("Failed to mark stderr_log as world writable! May cause errors if using a lower-priveleged user!");
+					warn!("Failed to mark stderr_log as world writable! May cause errors if using a lower-priveleged user!");
 				}
 			}
 		}
@@ -1575,7 +1607,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 
 			// Have we been requested to stop?
 			if should_stop.load(Ordering::Acquire) {
-				error!("Docker Executor was told to stop!");
+				error!("Docker Executor was told to terminate as failure!");
 				rc = 10;
 				break;
 			}
@@ -1603,7 +1635,7 @@ mod unit_tests {
 
 			assert!(
 				DockerExecutor::new(&pb, &args, &provided_conf, None,).is_err(),
-				"Docker Executor without a name_prefix should error!",
+				"Docker Executor without a name_prefix should error.",
 			);
 		}
 
@@ -1615,7 +1647,7 @@ mod unit_tests {
 
 			assert!(
 				DockerExecutor::new(&pb, &args, &provided_conf, None,).is_err(),
-				"Docker executor without an image should error!",
+				"Docker executor without an image should error.",
 			);
 		}
 
