@@ -104,17 +104,3 @@ pub fn initialize_crate_logging() -> Result<()> {
 
 	Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	/// Tests are meant to prove that dev-loop works on a platform.
-	///
-	/// `initialize_crate_logging()` should always pass on a supported platform.
-	#[test]
-	fn can_get_home_directory() {
-		let logging = initialize_crate_logging();
-		assert!(logging.is_ok());
-	}
-}
