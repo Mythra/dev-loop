@@ -1,0 +1,10 @@
+---
+default_executor:
+  type: docker
+  params:
+    image: 'alpine:edge'
+    name_prefix: 'dl-no-bash-'
+
+task_locations:
+  - type: path
+    at: .dl

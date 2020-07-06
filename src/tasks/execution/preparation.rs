@@ -185,9 +185,9 @@ async fn command_to_executable_task(
 		.fetch_with_root_and_filter(loc, &root_path, None)
 		.await
 		.wrap_err(format!(
-			"Failed fetching task implementation from: `{}:{}`",
+			"Failed fetching task script for task named: [{}], implementation from: [{}]",
+			task.get_name(),
 			tf_loc,
-			task.get_name()
 		))?;
 	if resulting_items.len() != 1 {
 		return Err(eyre!(

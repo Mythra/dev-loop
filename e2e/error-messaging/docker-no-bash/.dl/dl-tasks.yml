@@ -1,0 +1,7 @@
+---
+tasks:
+  - name: echo
+    location:
+      type: path
+      at: echo.sh
+    tags: [echo]

@@ -204,12 +204,17 @@ impl ExecutorRepository {
 						.into_iter()
 						.enumerate()
 					{
+						let span = tracing::info_span!(
+							"executor_creation",
+							source_path = exec_conf_file.get_source(),
+							executor_number = idx + 1
+						);
+						let _guard = span.enter();
+
 						let exec_res = Self::instantiate_executor(rd, &econf).await;
 						if let Err(exec_init_err) = exec_res {
 							warn!(
-								"Failed to initialize executor #{} from: [{}] due to: {:?}. Will not be choosing.",
-								idx + 1,
-								exec_conf_file.get_source(),
+								"Failed to initialize executor due to: {:?}. Will not be choosing.",
 								exec_init_err,
 							);
 							continue;
@@ -227,12 +232,7 @@ impl ExecutorRepository {
 							potential_id =
 								Self::hash_string(&potential_id, hash_builder.build_hasher());
 						}
-						debug!(
-							"Executor #{} at location: [{}] has been assigned ID: [{}]",
-							idx + 1,
-							exec_conf_file.get_source(),
-							potential_id
-						);
+						debug!("Executor has been assigned ID: [{}]", potential_id);
 						executors.insert(potential_id, executor);
 					}
 				}
