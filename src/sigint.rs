@@ -1,4 +1,4 @@
-use color_eyre::{eyre::WrapErr, section::help::Help, Result};
+use color_eyre::{eyre::WrapErr, Result, Section};
 use lazy_static::*;
 
 lazy_static! {

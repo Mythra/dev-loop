@@ -1,6 +1,6 @@
 //! A utility function for determining if a string is similar.
 
-use color_eyre::{section::help::Help, Report};
+use color_eyre::{Report, Section};
 use std::collections::HashMap;
 
 /// Returns the final index for a value in a single vector that represents a fixed

@@ -5,7 +5,7 @@
 //! Those validations happen at different stages within the program.
 
 use crate::yaml_err::contextualize_yaml_err;
-use color_eyre::{eyre::WrapErr, section::help::Help, Result};
+use color_eyre::{eyre::WrapErr, Result, Section};
 use std::{
 	fs::{canonicalize, File},
 	io::{Error as IoError, Read},

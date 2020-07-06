@@ -1,7 +1,7 @@
 //! Any filesystem related code for tasks...
 
 use crate::config::types::TopLevelConf;
-use color_eyre::{eyre::WrapErr, section::help::Help, Result};
+use color_eyre::{eyre::WrapErr, Result, Section};
 use std::{fs::create_dir_all, path::PathBuf};
 
 /// Ensure all the directories exist for a task that need to exist.

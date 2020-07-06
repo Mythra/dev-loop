@@ -15,7 +15,7 @@ use crate::{
 		TaskGraph,
 	},
 };
-use color_eyre::{eyre::eyre, section::help::Help, Result};
+use color_eyre::{eyre::eyre, Result, Section};
 use crossbeam_deque::Worker;
 use std::path::PathBuf;
 

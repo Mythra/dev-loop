@@ -19,7 +19,7 @@ use crate::{
 	},
 };
 
-use color_eyre::{eyre::eyre, section::help::Help, Report, Result};
+use color_eyre::{eyre::eyre, Report, Result, Section};
 use crossbeam_deque::Worker;
 use std::{collections::HashMap, path::PathBuf};
 

@@ -6,7 +6,7 @@
 
 use crate::config::types::TopLevelConf;
 
-use color_eyre::{eyre::eyre, section::help::Help, Report};
+use color_eyre::{eyre::eyre, Report, Section};
 use tracing::warn;
 
 pub mod commands;

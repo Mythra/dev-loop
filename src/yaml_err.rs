@@ -9,8 +9,7 @@ use annotate_snippets::{
 };
 use color_eyre::{
 	eyre::{eyre, WrapErr},
-	section::help::Help,
-	Report,
+	Report, Section,
 };
 use serde_yaml::Error as YamlError;
 

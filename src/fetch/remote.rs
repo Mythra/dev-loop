@@ -5,7 +5,7 @@ use crate::{
 	fetch::FetchedItem,
 	future_helper::timeout_with_log_msg,
 };
-use color_eyre::{eyre::eyre, section::help::Help, Result};
+use color_eyre::{eyre::eyre, Result, Section};
 use isahc::prelude::*;
 use std::time::Duration;
 

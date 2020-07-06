@@ -1,6 +1,6 @@
 //! Handles any logging utilities that we need in our crate for dev-loop.
 
-use color_eyre::Result;
+use color_eyre::{config::HookBuilder, Result};
 use lazy_static::*;
 use std::sync::{
 	atomic::{AtomicBool, Ordering},
@@ -46,7 +46,8 @@ enum Format {
 ///
 /// # Errors
 ///
-/// If we fail to initialize the log tracer.
+/// - If we fail to initialize the log tracer.
+/// - If `color_eyre` fails to initialize.
 pub fn initialize_crate_logging() -> Result<()> {
 	let chosen_format = match std::env::var("RUST_LOG_FORMAT")
 		.as_ref()
@@ -74,9 +75,9 @@ pub fn initialize_crate_logging() -> Result<()> {
 			.unwrap_or_default()
 			.is_empty();
 
-	if !add_spantrace {
-		std::env::set_var("RUST_SPANTRACE", "0");
-	}
+	HookBuilder::new()
+		.capture_span_trace_by_default(add_spantrace)
+		.install()?;
 
 	let filter_layer = EnvFilter::from_default_env().add_directive(chosen_level.into());
 	let fmt_layer = fmt_layer().with_target(false);
@@ -84,36 +85,20 @@ pub fn initialize_crate_logging() -> Result<()> {
 
 	match chosen_format {
 		Format::Text => {
-			if add_spantrace {
-				tracing_subscriber::registry()
-					.with(filter_layer)
-					.with(fmt_layer)
-					.with(tracing_layer)
-					.with(ErrorLayer::default())
-					.init();
-			} else {
-				tracing_subscriber::registry()
-					.with(filter_layer)
-					.with(fmt_layer)
-					.with(tracing_layer)
-					.init();
-			}
+			tracing_subscriber::registry()
+				.with(filter_layer)
+				.with(fmt_layer)
+				.with(tracing_layer)
+				.with(ErrorLayer::default())
+				.init();
 		}
 		Format::Json => {
-			if add_spantrace {
-				tracing_subscriber::registry()
-					.with(filter_layer)
-					.with(fmt_layer.json())
-					.with(tracing_layer)
-					.with(ErrorLayer::default())
-					.init();
-			} else {
-				tracing_subscriber::registry()
-					.with(filter_layer)
-					.with(fmt_layer.json())
-					.with(tracing_layer)
-					.init();
-			}
+			tracing_subscriber::registry()
+				.with(filter_layer)
+				.with(fmt_layer.json())
+				.with(tracing_layer)
+				.with(ErrorLayer::default())
+				.init();
 		}
 	};
 

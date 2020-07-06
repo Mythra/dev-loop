@@ -4,7 +4,7 @@ use crate::{
 	config::types::{LocationConf, LocationType},
 	fetch::FetchedItem,
 };
-use color_eyre::{eyre::eyre, section::help::Help, Result};
+use color_eyre::{eyre::eyre, Result, Section};
 use std::{
 	fs::{canonicalize, read_dir, File},
 	io::Read,

@@ -53,8 +53,7 @@ use crate::{
 
 use color_eyre::{
 	eyre::{eyre, WrapErr},
-	section::help::Help,
-	Report, Result,
+	Report, Result, Section,
 };
 use crossbeam_channel::Sender;
 use isahc::{config::VersionNegotiation, prelude::*, HttpClient, HttpClientBuilder};

@@ -15,8 +15,7 @@ use crate::{
 
 use color_eyre::{
 	eyre::{eyre, WrapErr},
-	section::help::Help,
-	Result,
+	Result, Section,
 };
 use crossbeam_channel::Sender;
 use std::{
