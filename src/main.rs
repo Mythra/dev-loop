@@ -4,73 +4,33 @@
 	clippy::wildcard_imports
 )]
 
-use lazy_static::*;
-use std::{
-	path::PathBuf,
-	sync::{
-		atomic::{AtomicBool, Ordering},
-		Arc,
-	},
-};
-use tracing::error;
+use crate::config::types::TopLevelConf;
 
-lazy_static! {
-	pub static ref RUNNING: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
-}
+use color_eyre::{eyre::eyre, Report, Section};
+use tracing::warn;
 
 pub mod commands;
 pub mod config;
 pub mod dirs;
 pub mod executors;
 pub mod fetch;
+pub mod future_helper;
 pub mod log;
+pub mod sigint;
+pub mod strsim;
 pub mod tasks;
 pub mod terminal;
-
-/// Determines if Ctrl-C has been hit.
-#[must_use]
-pub fn has_ctrlc_been_hit() -> bool {
-	!RUNNING.clone().load(Ordering::SeqCst)
-}
-
-/// Get the temporary directory for this host.
-#[must_use]
-pub fn get_tmp_dir() -> PathBuf {
-	// Mac OS X actually uses "TMPDIR" for a user specified temporary directory
-	// as opposed to `/tmp`. There are subtle differences between the two, and
-	// without getting into details the key thing is we should use it if it
-	// is set.
-	//
-	// We've seen numerous problems trying to use `/tmp` on OSX.
-	if let Ok(tmpdir_env) = std::env::var("TMPDIR") {
-		let pbte = PathBuf::from(tmpdir_env);
-		if pbte.is_dir() {
-			pbte
-		} else {
-			PathBuf::from("/tmp")
-		}
-	} else {
-		PathBuf::from("/tmp")
-	}
-}
+pub mod yaml_err;
 
 /// The entrypoint to the application.
 ///
 /// Gets called at the beginning, and performs setup.
-#[tracing::instrument]
-fn main() {
-	if let Err(log_err) = log::initialize_crate_logging() {
-		panic!("Failed to initialize logger due to: [{:?}]", log_err);
-	}
-	let r = RUNNING.clone();
-	if let Err(ctrlc_err) = ctrlc::set_handler(move || {
-		r.store(false, Ordering::SeqCst);
-	}) {
-		panic!(
-			"Failed to initialize CTRLC handler due to: [{:?}]",
-			ctrlc_err
-		);
-	}
+fn main() -> Result<(), Report> {
+	log::initialize_crate_logging()?;
+	sigint::setup_global_ctrlc_handler()?;
+
+	let span = tracing::info_span!("dev-loop");
+	let _span_guard = span.enter();
 
 	let mut program_name = String::new();
 	let mut action = String::new();
@@ -91,13 +51,25 @@ fn main() {
 		action = "list".to_owned();
 	}
 
-	// Use if let over unwrap_or since unwrap_or executes optimistically.
 	let tlc_res = config::get_top_level_config();
+	let errord_on_tlc = tlc_res.is_err();
 	let tlc = if let Err(tlc_err) = tlc_res {
-		error!("Valid YAML Configuration not found, you will need to create one before using dev-loop. Error: [{:?}]", tlc_err);
+		// NOTE(cynthia): if you change this print statement, make sure it looks
+		// correct on below commands!
+		//
+		// Because list/clean still wants to be run even with no configuration
+		// we print it out here, and exec/run assume it's printed here.
+		warn!(
+			"{:?}\n",
+			tlc_err.wrap_err(
+				"Invalid YAML Configuration, you will need a valid one if you want to run dev-loop"
+			)
+		);
 		config::types::TopLevelConf::create_empty_config()
 	} else {
-		tlc_res.unwrap()
+		tlc_res
+			.unwrap()
+			.unwrap_or_else(TopLevelConf::create_empty_config)
 	};
 
 	let root_dir_opt = config::get_project_root();
@@ -106,7 +78,9 @@ fn main() {
 	} else if let Ok(dir) = std::env::current_dir() {
 		dir
 	} else {
-		panic!("No project root, and couldn't fetch current directory!");
+		return Err(eyre!(
+			"Failed to find [.dl/config.yml] in current directory, or parent directories. The current working directory could also not be determined."
+		)).suggestion("This is an internal error, please file an issue on the dev-loop repo.");
 	};
 
 	let fetcher_res = fetch::FetcherRepository::new(root_dir.clone());
@@ -114,27 +88,45 @@ fn main() {
 		panic!("Unknown fetcher error: [{:?}]", fetch_err);
 	}
 	let fetcher = fetcher_res.unwrap();
-	let term = terminal::Term::new();
 
-	let exit_code = match action.as_str() {
+	Ok(match action.as_str() {
 		"list" => async_std::task::block_on(async {
-			commands::list::handle_list_command(&tlc, &fetcher, &term, &arguments).await
+			commands::list::handle_list_command(&tlc, &fetcher, &arguments).await
 		}),
-		"exec" => async_std::task::block_on(async {
-			commands::exec::handle_exec_command(&tlc, &fetcher, &term, &arguments, &root_dir).await
-		}),
-		"run" => async_std::task::block_on(async {
-			commands::run::handle_run_command(&tlc, &fetcher, &term, &arguments, &root_dir).await
-		}),
+		"exec" => {
+			if errord_on_tlc {
+				std::process::exit(10);
+			}
+
+			async_std::task::block_on(async {
+				commands::exec::handle_exec_command(&tlc, &fetcher, &arguments, &root_dir).await
+			})
+		}
+		"run" => {
+			if errord_on_tlc {
+				std::process::exit(10);
+			}
+
+			async_std::task::block_on(async {
+				commands::run::handle_run_command(&tlc, &fetcher, &arguments, &root_dir).await
+			})
+		}
 		"clean" => {
 			async_std::task::block_on(async { commands::clean::handle_clean_command().await })
 		}
 		&_ => {
-			error!("The sub-command: [{}] is not known to dev-loop.\n\n\
-							note: Valid commands are: `list` for listing tasks/presets, `exec` to execute a task, `run` to run a preset, and `clean` to cleanup.", action);
-			10
-		}
-	};
+			let err = Err(eyre!(
+				"The sub-command: [{}] is not known to dev-loop.",
+				action,
+			));
 
-	std::process::exit(exit_code)
+			strsim::add_did_you_mean_text(
+				err,
+				&action,
+				&["clean", "list", "exec", "run"],
+				2,
+				Some("You can use the `list` sub-command to get a list of commands to run."),
+			)
+		}
+	}?)
 }

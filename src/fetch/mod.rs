@@ -4,13 +4,11 @@
 //! So for example the `FilesystemFetcher` fetches data from a filesystem.
 //! The `HttpFetcher` fetched data from a remote endpoint over http.
 
-use crate::config::types::LocationConf;
-use anyhow::{anyhow, Result};
+use crate::config::types::{LocationConf, LocationType};
+use color_eyre::Result;
 use std::{
-	collections::HashMap,
 	fmt::{Debug, Formatter},
 	path::PathBuf,
-	sync::Arc,
 };
 
 /// Describes the result of a fetch. This is a two part response
@@ -21,7 +19,7 @@ pub struct FetchedItem {
 	/// The contents of whatever was fetched.
 	contents: Vec<u8>,
 	/// The fetcher that fetched this item.
-	fetched_by: String,
+	fetched_by: LocationType,
 	/// An end-user understood idea of where this item came from.
 	source: String,
 }
@@ -33,7 +31,7 @@ impl FetchedItem {
 	/// `fetched_by`: The fetcher that fetched this task.
 	/// `source`: The source of where this came from.
 	#[must_use]
-	pub fn new(contents: Vec<u8>, fetched_by: String, source: String) -> Self {
+	pub fn new(contents: Vec<u8>, fetched_by: LocationType, source: String) -> Self {
 		Self {
 			contents,
 			fetched_by,
@@ -49,7 +47,7 @@ impl FetchedItem {
 
 	/// Get who fetched this particular item.
 	#[must_use]
-	pub fn get_fetched_by(&self) -> &str {
+	pub fn get_fetched_by(&self) -> &LocationType {
 		&self.fetched_by
 	}
 
@@ -60,135 +58,103 @@ impl FetchedItem {
 	}
 }
 
-/// Describes a "fetcher", or something that can
-/// fetch data from a particular location.
-#[async_trait::async_trait]
-pub trait Fetcher {
-	/// Attempt to fetch an item from an actual location, will default to a filter that allows all.
-	///
-	/// `location`: The actual location to fetch.
-	#[must_use]
-	async fn fetch(&self, location: &LocationConf) -> Result<Vec<FetchedItem>>;
-
-	/// Attempt to fetch an item from an actual location.
-	///
-	/// `location`: The actual location to fetch.
-	/// `filter_filename`: The filename to filter by (e.g. only task files).
-	#[must_use]
-	async fn fetch_filter(
-		&self,
-		location: &LocationConf,
-		filter_filename: Option<String>,
-	) -> Result<Vec<FetchedItem>>;
-
-	/// Attempt to fetch an item from an actual location.
-	///
-	/// `location`: The actual location to fetch.
-	/// `root_dir`: The root directory to relatively fetch from if it's a path.
-	/// `filter_filename`: The filename to filter by (e.g. only task files).
-	#[must_use]
-	async fn fetch_with_root_and_filter(
-		&self,
-		location: &LocationConf,
-		root_dir: &PathBuf,
-		filter_filename: Option<String>,
-	) -> Result<Vec<FetchedItem>>;
-}
-
 pub mod fs;
 pub mod remote;
 
-/// Describes a repository of fetchers. Allows fetching from multiple
-/// sources all at once.
+/// A wrapper around all the fetchers at once, so you just have one type to
+/// deal with.
 pub struct FetcherRepository {
-	/// `repo`: The repository of fetchers.
-	repo: Arc<HashMap<String, Box<dyn Fetcher + Sync + Send>>>,
+	http_fetcher: remote::HttpFetcher,
+	path_fetcher: fs::PathFetcher,
+	project_root: PathBuf,
 }
 
 impl Debug for FetcherRepository {
 	fn fmt(&self, formatter: &mut Formatter) -> Result<(), std::fmt::Error> {
-		let mut keys_str = String::new();
-		for key in self.repo.keys() {
-			keys_str += key;
-			keys_str += ",";
-		}
-
-		formatter.write_str(&format!("FetcherRepository {}{}{}", "{", keys_str, "}"))
+		formatter.write_str("FetcherRepository {http, path}")
 	}
 }
 
 impl FetcherRepository {
-	/// Implement a new repository fetcher.
-	///
-	/// `project_root`: The root of this project.
+	/// Implement a fetcher that can fetch from any location type.
 	///
 	/// # Errors
 	///
 	/// If creating any of the underlying fetchers fails.
-	pub fn new(project_root: std::path::PathBuf) -> Result<Self> {
-		let mut fetchers: HashMap<String, Box<dyn Fetcher + Sync + Send>> = HashMap::new();
-
-		let fs_fetcher = fs::PathFetcher::new(project_root)?;
-		let http_fetcher = remote::HttpFetcher::new()?;
-
-		fetchers.insert(fs::PathFetcher::fetches_for(), Box::new(fs_fetcher));
-		fetchers.insert(remote::HttpFetcher::fetches_for(), Box::new(http_fetcher));
+	pub fn new(project_root: PathBuf) -> Result<Self> {
+		let http_fetcher = remote::HttpFetcher::default();
+		let path_fetcher = fs::PathFetcher::default();
 
 		Ok(Self {
-			repo: Arc::new(fetchers),
+			http_fetcher,
+			path_fetcher,
+			project_root,
 		})
 	}
-}
 
-#[async_trait::async_trait]
-impl Fetcher for FetcherRepository {
-	#[must_use]
-	async fn fetch(&self, location: &LocationConf) -> Result<Vec<FetchedItem>> {
-		if !self.repo.contains_key(location.get_type()) {
-			return Err(anyhow!(
-				"Do not know how to get location type: [{}]",
-				location.get_type()
-			));
+	/// Fetch from a particular location.
+	///
+	/// # Errors
+	///
+	/// - Bubbled error from underlying fetchers when there is an error fetching
+	///   the item.
+	pub async fn fetch(&self, location: &LocationConf) -> Result<Vec<FetchedItem>> {
+		match *location.get_type() {
+			LocationType::HTTP => self.http_fetcher.fetch_http(location).await,
+			LocationType::Path => {
+				self.path_fetcher
+					.fetch_from_fs(location, &self.project_root, &self.project_root, None)
+					.await
+			}
 		}
-
-		let fetcher = &self.repo[location.get_type()];
-		fetcher.fetch(location).await
 	}
 
-	#[must_use]
-	async fn fetch_filter(
+	/// Fetch from a particular location, while filtering on filename.
+	///
+	/// # Errors
+	///
+	/// - Bubbled error from underlying fetchers when there is an error fetching
+	///   the item.
+	pub async fn fetch_filter(
 		&self,
 		location: &LocationConf,
 		filter_filename: Option<String>,
 	) -> Result<Vec<FetchedItem>> {
-		if !self.repo.contains_key(location.get_type()) {
-			return Err(anyhow!(
-				"Do not know how to get location type: [{}]",
-				location.get_type()
-			));
+		match *location.get_type() {
+			LocationType::HTTP => self.http_fetcher.fetch_http(location).await,
+			LocationType::Path => {
+				self.path_fetcher
+					.fetch_from_fs(
+						location,
+						&self.project_root,
+						&self.project_root,
+						filter_filename,
+					)
+					.await
+			}
 		}
-
-		let fetcher = &self.repo[location.get_type()];
-		fetcher.fetch_filter(location, filter_filename).await
 	}
 
-	#[must_use]
-	async fn fetch_with_root_and_filter(
+	/// Fetch from a particular location, while filtering on a filename, and
+	/// specifying the directory to be relative at.
+	///
+	/// # Errors
+	///
+	/// - Bubbled error from underlying fetchers when there is an error fetching
+	///   the item.
+	pub async fn fetch_with_root_and_filter(
 		&self,
 		location: &LocationConf,
 		root_dir: &PathBuf,
 		filter_filename: Option<String>,
 	) -> Result<Vec<FetchedItem>> {
-		if !self.repo.contains_key(location.get_type()) {
-			return Err(anyhow!(
-				"Do not know how to get location type: [{}]",
-				location.get_type()
-			));
+		match *location.get_type() {
+			LocationType::HTTP => self.http_fetcher.fetch_http(location).await,
+			LocationType::Path => {
+				self.path_fetcher
+					.fetch_from_fs(location, &self.project_root, root_dir, filter_filename)
+					.await
+			}
 		}
-
-		let fetcher = &self.repo[location.get_type()];
-		fetcher
-			.fetch_with_root_and_filter(location, root_dir, filter_filename)
-			.await
 	}
 }

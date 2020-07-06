@@ -1,0 +1,9 @@
+---
+executors:
+  - type: docker
+    params:
+      extra_mounts: blah
+      image: ubuntu:18.04
+      name_prefix: lol-
+    provides:
+      - name: linux

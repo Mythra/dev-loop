@@ -1,0 +1,7 @@
+---
+tasks:
+  - type: ppipeline
+    description: a pipeline type that has been typo'd
+    tags: []
+    steps: []
+    name: typo-pipeline

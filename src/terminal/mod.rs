@@ -7,10 +7,16 @@
 use atty::Stream;
 use colored::*;
 use crossbeam_channel::Sender;
+use lazy_static::*;
+use std::sync::Arc;
 use term_size::dimensions as terminal_dimensions;
 
 pub mod task_indicator;
 pub mod throttle;
+
+lazy_static! {
+	pub static ref TERM: Arc<Term> = Arc::new(Term::new());
+}
 
 /// Represents a `Term`, or terminal. the output needed in order to properly render
 /// colours/progress bars/etc.
@@ -121,6 +127,18 @@ impl Term {
 		}
 	}
 
+	/// Determine if this terminal should color STDOUT.
+	#[must_use]
+	pub fn should_color_stdout(&self) -> bool {
+		self.is_colour
+	}
+
+	/// Determine if this terminal should color STDERR.
+	#[must_use]
+	pub fn should_color_stderr(&self) -> bool {
+		self.is_colour_err
+	}
+
 	/// Render a list of items with a particular description.
 	///
 	/// `list_with_descriptions`: A pair of <item, description>.
@@ -131,7 +149,7 @@ impl Term {
 		list_with_descriptions: &[(String, String)],
 	) -> String {
 		if list_with_descriptions.is_empty() {
-			return "".to_owned();
+			return String::new();
 		}
 
 		let mut longest_key: usize = 0;

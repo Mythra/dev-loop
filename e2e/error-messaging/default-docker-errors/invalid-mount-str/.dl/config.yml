@@ -1,0 +1,11 @@
+---
+default_executor:
+  type: docker
+  params:
+    extra_mounts: blah
+    image: ubuntu:18.04
+    name_prefix: lol-
+
+task_locations:
+  - type: path
+    at: .dl

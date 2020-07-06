@@ -3,12 +3,18 @@
 //! Everything from the "DAG" of tasks, to running a specific task, etc.
 
 use crate::{
-	config::types::{TaskConf, TaskConfFile, TopLevelConf},
-	fetch::{Fetcher, FetcherRepository},
+	config::types::{LocationType, TaskConf, TaskConfFile, TaskType, TopLevelConf},
+	fetch::FetcherRepository,
+	strsim::add_did_you_mean_text,
+	yaml_err::contextualize_yaml_err,
 };
-use anyhow::{anyhow, Result};
+
+use color_eyre::{
+	eyre::{eyre, WrapErr},
+	Result, Section,
+};
 use std::collections::{HashMap, HashSet};
-use tracing::error;
+use tracing::warn;
 
 pub mod execution;
 pub mod fs;
@@ -25,17 +31,24 @@ pub struct TaskGraph {
 }
 
 impl TaskGraph {
-	/// Create a new TaskGraph.
+	/// Create a new `TaskGraph`.
 	///
 	/// NOTE: this will completely parse all the task files (remote or otherwise),
 	/// and can generally be considered to be one of the longer tasks within dev-loop.
 	///
 	/// `tlc`: The parsed top level config to start fetching tasks from.
 	/// `fetcher`: The repository of fetchers.
-	#[allow(clippy::cognitive_complexity)]
-	#[must_use]
-	#[tracing::instrument]
+	///
+	/// # Errors
+	///
+	/// - When there is an error fetching the tasks yaml files.
+	/// - When the task yaml files are invalid yaml.
+	/// - When the task yaml file has some sort of invariant error.
+	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub async fn new(tlc: &TopLevelConf, fetcher: &FetcherRepository) -> Result<Self> {
+		let span = tracing::info_span!("finding_tasks");
+		let _guard = span.enter();
+
 		// If we have tasks, we have some fetching to do...
 		if let Some(tasks) = tlc.get_task_locations() {
 			// These are hashsets to track for a "valid" DAG. A Valid DAG:
@@ -52,28 +65,32 @@ impl TaskGraph {
 			let mut unsatisfied_task_names = HashSet::new();
 			let mut allowing_dag_errors = false;
 
-			let mut flatenned_tasks = HashMap::new();
+			let mut flatenned_tasks: HashMap<String, TaskConf> = HashMap::new();
 
-			for task_location in tasks {
+			for (tl_idx, task_location) in tasks.iter().enumerate() {
 				// Go, and fetch all the task locations, if we're searching folders
 				// search for "dl-tasks.yml" files.
 				let resulting_fetched_tasks = fetcher
 					.fetch_filter(task_location, Some("dl-tasks.yml".to_owned()))
-					.await;
+					.await
+					.wrap_err(format!(
+						"Failed fetching tasks specified at `.dl/config.yml:task_locations:{}`",
+						tl_idx
+					));
 
 				// For HTTP errors we're going to try to continue, if your FS fails
 				// well than something really bad is going on that we don't want to handle.
 				if let Err(err) = resulting_fetched_tasks {
-					if task_location.get_type() == "http" {
-						error!("Failed to fetch from an HTTP Endpoint. Trying to continue anyway, incase you're running a task that is fully local with no internet...");
+					if task_location.get_type() == &LocationType::HTTP {
+						warn!("{:?}", err);
+						warn!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
 						allowing_dag_errors = true;
 					} else {
-						error!("Location type failed to fetch a filesystem component! Assuming this is a critical error.");
-						return Err(anyhow!(
-							"Failed to fetch tasks from FS: [{:?}] Internal Err: [{:?}]",
-							task_location,
-							err
-						));
+						warn!("Failed to fetch a file from the filesystem! Assuming this is a critical error.");
+						return Err(err.wrap_err(format!(
+							"Failed to read the file: [{}] from the filesystem",
+							task_location.get_at()
+						)));
 					}
 					continue;
 				}
@@ -83,22 +100,21 @@ impl TaskGraph {
 					let task_yaml_res =
 						serde_yaml::from_slice::<TaskConfFile>(&task_conf_file.get_contents());
 					if let Err(tye) = task_yaml_res {
-						if task_location.get_type() == "http" {
-							error!("Failed to fetch from an HTTP Endpoint. Trying to continue anyway, incase you're running a task that is fully local with no internet...");
+						if task_location.get_type() == &LocationType::HTTP {
+							warn!("{:?}", tye,);
+							warn!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
 							allowing_dag_errors = true;
 							continue;
 						}
-						return Err(anyhow!(
-							"Failed to parse task configuration file yaml. Source: [{}] Err: [{:?}]",
+
+						return contextualize_yaml_err(
+							Err(tye),
 							task_conf_file.get_source(),
-							tye,
-						));
+							&String::from_utf8_lossy(task_conf_file.get_contents()).to_string()
+						).note("Full types, and supported values are documented at: https://dev-loop.kungfury.io/docs/schemas/task-conf-file");
 					}
 					let mut task_yaml = task_yaml_res.unwrap();
-
-					if task_conf_file.get_fetched_by() == "path" {
-						task_yaml.set_task_location(task_conf_file.get_source());
-					}
+					task_yaml.set_task_location(task_conf_file.get_source());
 
 					// This is the "core" loop, where we've now parsed a task config
 					// file, and need to enter it's contents into the DAG. We have to
@@ -110,11 +126,12 @@ impl TaskGraph {
 
 						// If we've already seen this task... it's an error.
 						// Task names need to be globally unique.
-						if flatenned_tasks.contains_key(task_name) {
-							return Err(anyhow!(
-								"Found duplicate task: [{}] defined in: [{:?}]",
+						if let Some(other_task_conf) = flatenned_tasks.get(task_name) {
+							return Err(eyre!(
+								"Found duplicate task named: [{}]. Originally defined in config at: [{}], found again in config at: [{}]",
 								task_name,
-								task_location,
+								other_task_conf.get_source_path(),
+								task_conf_file.get_source(),
 							));
 						}
 
@@ -130,7 +147,7 @@ impl TaskGraph {
 						// so it can be checked later.
 						let ttype = task_conf.get_type();
 						match ttype {
-							"oneof" => {
+							TaskType::Oneof => {
 								if let Some(options) = task_conf.get_options() {
 									for option in options {
 										internal_task_names.remove(option.get_task_name());
@@ -141,7 +158,7 @@ impl TaskGraph {
 									}
 								}
 							}
-							"parallel-pipeline" | "pipeline" => {
+							TaskType::Pipeline | TaskType::ParallelPipeline => {
 								if let Some(steps) = task_conf.get_steps() {
 									for step in steps {
 										internal_task_names.remove(step.get_task_name());
@@ -152,7 +169,7 @@ impl TaskGraph {
 									}
 								}
 							}
-							_ => {}
+							TaskType::Command => {}
 						}
 
 						// If we're an internal task, and someone hasn't referenced us already
@@ -173,20 +190,36 @@ impl TaskGraph {
 				// If we had any tasks that we're in a
 				// 'oneof'/'parallel-pipeline'/'pipeline', but we never
 				// saw... go ahead and error.
+
 				if !unsatisfied_task_names.is_empty() {
-					return Err(anyhow!(
-						"Found tasks referenced that do not exist: {:?}",
+					let mut err = Err(eyre!(
+						"Tasks referenced that do not exist: {:?}",
 						unsatisfied_task_names
 					));
+					for unknown_task in unsatisfied_task_names {
+						err = add_did_you_mean_text(
+							err,
+							&unknown_task,
+							&flatenned_tasks
+								.keys()
+								.map(String::as_str)
+								.collect::<Vec<&str>>(),
+							3,
+							None,
+						);
+					}
+
+					return err;
 				}
 
 				// If we had any tasks that we're marked internal, but never referenced...
 				// go ahead and error.
 				if !internal_task_names.is_empty() {
-					return Err(anyhow!(
+					return Err(eyre!(
 						"Found tasks that are marked internal, but are never referenced: {:?}",
 						internal_task_names
-					));
+					))
+					.suggestion("If an internal task is no longer needed it should be deleted.");
 				}
 			}
 

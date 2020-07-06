@@ -32,6 +32,6 @@ steps:
       ./scratch/dl exec build dl-release
     displayName: Build Dev-Loop Release
   - script: |
-      cd ./e2e/
-      DL_COMMAND="../target/dl-release" ./run-all-tests.sh
+      cd ./e2e/linux-e2e/
+      DL_COMMAND="../../target/dl-release" ./run-all-tests.sh
     displayName: Validate Dev-Loop Release

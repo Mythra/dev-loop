@@ -1,9 +1,8 @@
 //! Any filesystem related code for tasks...
 
 use crate::config::types::TopLevelConf;
-use anyhow::{anyhow, Result};
+use color_eyre::{eyre::WrapErr, Result, Section};
 use std::{fs::create_dir_all, path::PathBuf};
-use tracing::error;
 
 /// Ensure all the directories exist for a task that need to exist.
 ///
@@ -18,13 +17,10 @@ pub fn ensure_dirs(config: &TopLevelConf, root_dir: &PathBuf) -> Result<()> {
 		for ensure_dir in edirs {
 			let mut path = root_dir.clone();
 			path.push(ensure_dir);
-			if let Err(err) = create_dir_all(&path) {
-				error!(
-					"Failed to create directory: [{:?}] reason: [{:?}]",
-					path, err
-				);
-				return Err(anyhow!("{:?}", err));
-			}
+
+			create_dir_all(&path)
+				.wrap_err("Cannot ensure directory specified in `.dl/config.yml` in `ensure_directories`.")
+				.note(format!("Tried to create directory: [{:?}]", path))?;
 		}
 	}
 
