@@ -125,8 +125,8 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 	mark_file_as_executable(&entrypoint_path)?;
 
 	if rewrite_tmp {
-		Ok(entrypoint_path)
-	} else {
 		Ok(PathBuf::from(rewrite_tmp_dir(tmp_dir, &entrypoint_path)))
+	} else {
+		Ok(entrypoint_path)
 	}
 }
