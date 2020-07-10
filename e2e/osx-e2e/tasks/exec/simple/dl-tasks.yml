@@ -1,0 +1,10 @@
+---
+tasks:
+  - name: simple-task
+    description: just a simple task
+    location:
+      type: path
+      at: task.sh
+    execution_needs:
+      - name: host
+    internal: true

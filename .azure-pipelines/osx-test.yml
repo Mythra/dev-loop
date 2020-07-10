@@ -1,0 +1,34 @@
+---
+trigger: none
+
+pr:
+  branches:
+    include:
+    - '*'
+
+pool:
+  vmImage: 'macos-10.14'
+
+variables: []
+
+steps:
+  - script: |
+      curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain $RUSTUP_TOOLCHAIN
+      echo "##vso[task.setvariable variable=PATH;]$PATH:$HOME/.cargo/bin"
+    displayName: Install Rust
+  - script: |
+      brew install openssl
+    displayName: Install OpenSSL
+
+  - script: |
+      mkdir -p ./scratch/
+      (cd ./scratch/ && curl -sSL -o dl https://dev-loop-builds.sfo2.digitaloceanspaces.com/latest/dl-osx && chmod +x dl)
+    displayName: Download Dev-Loop
+
+  - script: |
+      ./scratch/dl exec ci-only build-osx-dl-release
+    displayName: Build Dev-Loop Release OSX
+  - script: |
+      cd ./e2e/osx-e2e/
+      DL_COMMAND="../../target/dl-release" ./run-all-tests.sh
+    displayName: Validate Dev-Loop Release
