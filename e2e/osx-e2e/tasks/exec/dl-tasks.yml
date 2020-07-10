@@ -1,0 +1,29 @@
+---
+tasks:
+  - name: exec-pipeline
+    description: run all the exec tests in a pipeline
+    type: pipeline
+    steps:
+      - name: simple
+        task: simple-task
+      - name: nested-oneof
+        task: nested-oneof-pt1
+        args:
+          - option
+      - name: oneof-passes-args
+        task: oneof-passes-args
+        args:
+          - script
+
+  - name: exec-test
+    description: the top level command for tests for the `exec` command.
+    type: oneof
+    options:
+      - name: simple
+        task: simple-task
+        description: just a simple task
+      - name: nested-oneof
+        description: test activating a nested oneof type
+        task: nested-oneof-pt1
+        args:
+          - option

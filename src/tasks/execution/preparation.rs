@@ -15,7 +15,7 @@ use std::{
 	future::Future,
 	hash::BuildHasher,
 	iter::FromIterator,
-	path::{Path, PathBuf},
+	path::PathBuf,
 	pin::Pin,
 	sync::Arc,
 };
@@ -173,10 +173,13 @@ async fn command_to_executable_task(
 	// would fetch from the root of the project, since it doesn't have an
 	// idea of what to be "relative" too.
 	let tf_loc: &str = task.get_source_path();
-	let root_path = if Path::new(tf_loc).exists() {
-		let mut tpb = PathBuf::from(tf_loc);
-		tpb.pop();
-		tpb
+
+	let mut relative_dir = root_directory.clone();
+	relative_dir.push(tf_loc);
+	relative_dir.pop();
+
+	let root_path = if relative_dir.exists() {
+		relative_dir
 	} else {
 		root_directory
 	};

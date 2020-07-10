@@ -1,0 +1,23 @@
+---
+executor_locations:
+  - type: path
+    at: executors
+    recurse: true
+
+helper_locations:
+  - type: path
+    at: helpers/
+    recurse: true
+
+task_locations:
+  - type: path
+    at: tasks
+    recurse: true
+  - type: http
+    at: http://lol-not-existant-but-should-not-block/a.yml
+  - type: http
+    at: http://lol-recurse-does-nothing/b.yml
+    recurse: true
+
+ensure_directories:
+  - build/

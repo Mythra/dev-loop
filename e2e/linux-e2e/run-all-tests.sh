@@ -14,6 +14,13 @@ fi
 rm -rf ./build/
 $DL_COMMAND exec exec-pipeline
 
+# Run inside another directory.
+if [[ "$DL_COMMAND" =~ "../" ]]; then
+  (cd tasks && ../$DL_COMMAND exec exec-pipeline)
+else
+  (cd tasks && $DL_COMMAND exec exec-pipeline)
+fi
+
 CACHED_DL_WORKER_COUNT="$DL_WORKER_COUNT"
 
 # Run with parallelism
