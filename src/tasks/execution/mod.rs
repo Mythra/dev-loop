@@ -2,7 +2,7 @@
 //! are thins like building the full list of "Task's" to run into an ordered
 //! vector.
 
-pub mod preparation;
+pub(crate) mod preparation;
 
 use crate::{
 	dirs::get_tmp_dir,
@@ -17,19 +17,18 @@ use crossbeam_deque::{Stealer, Worker};
 use std::{
 	fs::create_dir_all,
 	sync::{
-		atomic::{AtomicBool, AtomicIsize, Ordering},
+		atomic::{AtomicBool, AtomicI32, Ordering},
 		Arc,
 	},
 	time::{SystemTime, UNIX_EPOCH},
 };
-use tracing::debug;
+use tracing::{debug, error};
 
 /// Execute a particular "line" of tasks.
-#[allow(clippy::too_many_arguments)]
 async fn execute_task_line(
 	src_string: Arc<String>,
 	stealer: Stealer<WorkUnit>,
-	rc: Arc<AtomicIsize>,
+	rc: Arc<AtomicI32>,
 	should_stop: Arc<AtomicBool>,
 	log_channel: Sender<(String, String, bool)>,
 	task_channel: Sender<TaskChange>,
@@ -68,7 +67,7 @@ async fn execute_task_line(
 					worker_count,
 					task.get_task_name()
 				)));
-				let task_rc = task
+				let task_rc_res = task
 					.get_executor()
 					.execute(
 						log_channel.clone(),
@@ -78,7 +77,15 @@ async fn execute_task_line(
 						worker_count,
 					)
 					.await;
-				new_rc = task_rc;
+				match task_rc_res {
+					Ok(rc) => {
+						new_rc = rc;
+					}
+					Err(error) => {
+						error!("{:?}", error);
+						new_rc = 10;
+					}
+				}
 				let _ = task_channel.send(TaskChange::FinishedTask(format!(
 					"{}-{}",
 					worker_count,
@@ -92,7 +99,7 @@ async fn execute_task_line(
 						worker_count,
 						task.get_task_name()
 					)));
-					let task_rc = task
+					let task_rc_res = task
 						.get_executor()
 						.execute(
 							log_channel.clone(),
@@ -102,7 +109,15 @@ async fn execute_task_line(
 							worker_count,
 						)
 						.await;
-					new_rc = task_rc;
+					match task_rc_res {
+						Ok(rc) => {
+							new_rc = rc;
+						}
+						Err(error) => {
+							error!("{:?}", error);
+							new_rc = 10;
+						}
+					}
 					let _ = task_channel.send(TaskChange::FinishedTask(format!(
 						"{}-{}",
 						worker_count,
@@ -179,7 +194,6 @@ fn build_helpers_source_string(helpers: Vec<FetchedItem>) -> Result<String> {
 /// # Errors
 ///
 /// If we could not execute the tasks in parallel.
-#[allow(clippy::cast_possible_truncation)]
 pub async fn execute_tasks_in_parallel(
 	helpers: Vec<FetchedItem>,
 	tasks: Worker<WorkUnit>,
@@ -200,7 +214,7 @@ pub async fn execute_tasks_in_parallel(
 		let cloned_task_sender = task_sender.clone();
 		let stealer = tasks.stealer();
 
-		let finished_line = Arc::new(AtomicIsize::new(-1));
+		let finished_line = Arc::new(AtomicI32::new(-1));
 		let finished_clone = finished_line.clone();
 
 		async_std::task::spawn(async move {
@@ -234,7 +248,7 @@ pub async fn execute_tasks_in_parallel(
 
 		let mut any_more = false;
 		for potential_rc in &rc_indicators {
-			let new_rc = potential_rc.load(Ordering::Acquire);
+			let mut new_rc = potential_rc.load(Ordering::Acquire);
 			if new_rc == -1 {
 				any_more = true;
 				break;
@@ -242,15 +256,14 @@ pub async fn execute_tasks_in_parallel(
 				debug!("Found finished task rc: [{}]", new_rc);
 				// If it's already not equal to 0 preserve the original exit code.
 				if rc == 0 {
-					let mut new_rc_as_i32 = new_rc as i32;
-					if new_rc_as_i32 > 255 {
-						new_rc_as_i32 = 255;
+					if new_rc > 255 {
+						new_rc = 255;
 					}
-					if new_rc_as_i32 < 0 {
-						new_rc_as_i32 = 255;
+					if new_rc < 0 {
+						new_rc = 255;
 					}
 
-					rc += new_rc_as_i32;
+					rc += new_rc;
 				}
 			}
 		}

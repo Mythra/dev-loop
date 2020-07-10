@@ -3,7 +3,7 @@
 //! circumstances where we like powered off while running. However, it should
 //! always be safe to run.
 
-use crate::executors::{docker::DockerExecutor, host::HostExecutor};
+use crate::executors::{docker, host};
 
 use color_eyre::Result;
 use tracing::info;
@@ -19,8 +19,8 @@ pub async fn handle_clean_command() -> Result<()> {
 
 	info!("Cleaning resources ...");
 
-	HostExecutor::clean().await;
-	DockerExecutor::clean().await?;
+	host::Executor::clean().await;
+	docker::Executor::clean().await?;
 
 	info!("Cleaned.");
 	Ok(())

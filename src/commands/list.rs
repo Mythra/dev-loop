@@ -9,6 +9,7 @@
 use crate::{
 	config::types::{OneofOption, TaskConf, TaskType, TopLevelConf},
 	fetch::FetcherRepository,
+	strsim::calculate_did_you_mean_possibilities,
 	tasks::TaskGraph,
 	terminal::TERM,
 };
@@ -95,6 +96,52 @@ fn turn_oneof_into_listable(options: Option<&Vec<OneofOption>>) -> Vec<(String, 
 	results
 }
 
+/// Check if an argument is a selectable top level argument aka:
+///
+///   1. Is a task.
+///   2. Is a `Oneof` type.
+///   3. Is not marked as internal.
+fn is_selectable_top_level_arg<'a, 'b>(
+	arg: &'b str,
+	tasks: &'a HashMap<String, TaskConf>,
+) -> Option<&'a TaskConf> {
+	if !tasks.contains_key(arg) {
+		error!(
+			"Argument #1 ({}) is not a task that exists. Listing all possible tasks.",
+			arg,
+		);
+		return None;
+	}
+
+	let selected_task = &tasks[arg];
+	if selected_task.get_type() != &TaskType::Oneof {
+		error!(
+			"Argument #1 ({}) is not a task that can be listed. Listing all possible tasks.",
+			arg,
+		);
+		return None;
+	}
+
+	if selected_task.is_internal() {
+		error!(
+			"Argument #1 ({}) is an internal task, and cannot be listed. Listing all the possible tasks.",
+			arg,
+		);
+		return None;
+	}
+
+	Some(selected_task)
+}
+
+/// Check if a task has options that can be selected.
+fn task_has_options(task: &TaskConf) -> bool {
+	if let Some(options) = task.get_options() {
+		!options.is_empty()
+	} else {
+		false
+	}
+}
+
 /// Handle a raw list configuration.
 ///
 /// `config`: The configuration object.
@@ -134,41 +181,15 @@ fn handle_raw_list(config: &TopLevelConf, tasks: &HashMap<String, TaskConf>) {
 	);
 }
 
-/// Handle the actual `list command`.
-///
-/// `config` - the top level configuration object.
-/// `fetcher` - the thing that goes and fetches for us.
-/// `args` - the arguments for this list command.
-///
-/// # Errors
-///
-/// - When constructing the task graph.
-#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-pub async fn handle_list_command(
-	config: &TopLevelConf,
-	fetcher: &FetcherRepository,
-	args: &[String],
-) -> Result<()> {
-	let span = tracing::info_span!("list");
-	let _guard = span.enter();
-
-	// The list command is the main command you get when running the binary.
-	// It is not really ideal for CI environments, and we really only ever
-	// expect humans to run it. This is why we specifically colour it, and
-	// try to always output _something_.
-	let tasks = TaskGraph::new(config, fetcher)
-		.await?
-		.consume_and_get_tasks();
-
+fn handle_listing_arg<'a, 'b>(
+	tasks: &'a HashMap<String, TaskConf>,
+	args: &'b [String],
+) -> Option<&'a TaskConf> {
 	let mut last_selected_task: Option<&TaskConf> = None;
+
 	for (arg_idx, arg) in args.iter().enumerate() {
 		if let Some(prior_task) = last_selected_task {
-			let empty_vec = Vec::with_capacity(0);
-			if prior_task
-				.get_options()
-				.unwrap_or_else(|| &empty_vec)
-				.is_empty()
-			{
+			if !task_has_options(prior_task) {
 				error!(
 					"Argument #{} ({}) could not be found since the previous argument: #{} ({}) has no options. Performing top level list.",
 					arg_idx + 1,
@@ -176,9 +197,8 @@ pub async fn handle_list_command(
 					arg_idx,
 					prior_task.get_name(),
 				);
-				handle_raw_list(config, &tasks);
 
-				return Ok(());
+				return None;
 			}
 
 			let options = prior_task.get_options().unwrap();
@@ -186,9 +206,8 @@ pub async fn handle_list_command(
 
 			// Don't check for internal task here since a oneof could be built off
 			// of internal options, and we want those to be selectable.
-
 			if potential_current_option.is_none() {
-				let did_you_mean_options = crate::strsim::calculate_did_you_mean_possibilities(
+				let did_you_mean_options = calculate_did_you_mean_possibilities(
 					arg,
 					&options
 						.iter()
@@ -239,31 +258,39 @@ pub async fn handle_list_command(
 
 			last_selected_task = Some(selected_task);
 		} else {
-			if !tasks.contains_key(arg) {
-				error!(
-					"Argument #1 ({}) is not a task that exists. Listing all possible tasks.",
-					arg
-				);
-				handle_raw_list(config, &tasks);
-				return Ok(());
-			}
-
-			let selected_task = &tasks[arg];
-			if selected_task.get_type() != &TaskType::Oneof {
-				error!("Argument #1 ({}) is not a task that can be listed. Listing all possible tasks.", arg);
-				handle_raw_list(config, &tasks);
-				return Ok(());
-			}
-
-			if selected_task.is_internal() {
-				error!("Argument #1 ({}) is an internal task, and cannot be listed. Listing all the possible tasks.", arg);
-				handle_raw_list(config, &tasks);
-				return Ok(());
-			}
-
-			last_selected_task = Some(selected_task);
+			let arg = is_selectable_top_level_arg(arg, tasks)?;
+			last_selected_task = Some(arg);
 		}
 	}
+
+	last_selected_task
+}
+
+/// Handle the actual `list command`.
+///
+/// `config` - the top level configuration object.
+/// `fetcher` - the thing that goes and fetches for us.
+/// `args` - the arguments for this list command.
+///
+/// # Errors
+///
+/// - When constructing the task graph.
+pub async fn handle_list_command(
+	config: &TopLevelConf,
+	fetcher: &FetcherRepository,
+	args: &[String],
+) -> Result<()> {
+	let span = tracing::info_span!("list");
+	let _guard = span.enter();
+
+	// The list command is the main command you get when running the binary.
+	// It is not really ideal for CI environments, and we really only ever
+	// expect humans to run it. This is why we specifically colour it, and
+	// try to always output _something_.
+	let tasks = TaskGraph::new(config, fetcher)
+		.await?
+		.consume_and_get_tasks();
+	let last_selected_task = handle_listing_arg(&tasks, args);
 
 	if last_selected_task.is_none() {
 		handle_raw_list(config, &tasks);

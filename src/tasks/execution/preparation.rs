@@ -223,20 +223,47 @@ where
 	iter.into_iter().all(move |x| uniq.insert(x))
 }
 
-/// Taking the full (valid) map of tasks, and a `starting_task` to start with
-/// build a full list of the tasks that need to be executed, in which order.
-///
-/// `tasks`: the consumed state of a once valid `TaskDag`.
-/// `starting_task`: the task to actually start with.
-/// `fetcher`: Used to fetch the actual task contents.
-/// `executors`: The repository of executors.
-/// `root_directory`: The root directory of the filesystem.
-/// `arguments`: The arguments provided (from wherever) to know how to
-///              properly traverse oneof's.
-/// `pipeline_id`: the id of this pipeline.
-#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
-#[must_use]
-pub fn build_ordered_execution_list<'a, H: BuildHasher>(
+/// adds a command type task to the ordered execution list.
+async fn add_command_task_to_execution_list<'a, 'b>(
+	task: &'a TaskConf,
+	fetcher: &'a FetcherRepository,
+	executors: &'a mut ExecutorRepository,
+	root_directory: PathBuf,
+	arguments: &'a [String],
+	pipeline_id: String,
+	work_queue: &'a mut WorkQueue<'b>,
+) -> Result<usize> {
+	match work_queue {
+		WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
+			command_to_executable_task(
+				pipeline_id,
+				task,
+				fetcher,
+				executors,
+				root_directory,
+				Vec::from(arguments),
+			)
+			.await?,
+		)),
+		WorkQueue::VecQueue(vec) => vec.push(
+			command_to_executable_task(
+				pipeline_id,
+				task,
+				fetcher,
+				executors,
+				root_directory,
+				Vec::from(arguments),
+			)
+			.await?,
+		),
+	};
+
+	Ok(1)
+}
+
+/// adds a oneof type task to the ordered execution list.
+#[allow(clippy::too_many_arguments)]
+async fn add_oneof_task_to_execution_list<'a, 'b, H: BuildHasher>(
 	tasks: &'a HashMap<String, TaskConf, H>,
 	starting_task: &'a TaskConf,
 	fetcher: &'a FetcherRepository,
@@ -244,323 +271,345 @@ pub fn build_ordered_execution_list<'a, H: BuildHasher>(
 	root_directory: PathBuf,
 	arguments: &'a [String],
 	pipeline_id: String,
-	work_queue: &'a mut WorkQueue,
+	work_queue: &'a mut WorkQueue<'b>,
+) -> Result<(bool, usize)> {
+	// Parse a `oneof` type into a list of tasks.
+	// This _will_ recurse if an option is selected that is not a command task.
+
+	// First make sure someone has specified an options block for a oneof type.
+	let options = starting_task.get_options();
+	if options.is_none() {
+		return Err(eyre!(
+			"Task type is marked oneof but has no options: [{}]",
+			starting_task.get_name()
+		))
+		.suggestion("If you really meant to have no options specify an empty array: `[]`.");
+	}
+	let options = options.unwrap();
+
+	// If someone specified an empty options array, assume it's intentional.
+	if options.is_empty() {
+		return Ok((true, 0));
+	}
+	// If it's not an empty set of options we need to know how to choose one of the tasks.
+	if arguments.is_empty() {
+		return Err(eyre!(
+			"The OneOf task: [{}] was selected, but was provided no arguments to know which option to choose.",
+			starting_task.get_name(),
+		));
+	}
+
+	// Try to grab the option based on the first argument.
+	// The other arguments are dropped on purpose.
+	let potential_option = options
+		.iter()
+		.find(|option| option.get_name() == arguments[0]);
+	if potential_option.is_none() {
+		return Err(eyre!(
+			"The OneOf task: [{}] was selected, and attempted to find the option: [{}], but that option was not found.",
+			starting_task.get_name(),
+			arguments[0],
+		));
+	}
+	let selected_option = potential_option.unwrap();
+
+	// Try to turn that option into a relevant task.
+	//
+	// Remember we may have failed fetching from a remote endpoint.
+	// so it may not be in the TaskGraph.
+	let potential_option_as_task = tasks.get(selected_option.get_task_name());
+	if potential_option_as_task.is_none() {
+		return Err(eyre!(
+			"The OneOf task: [{}], selected the option: [{}], but failed to find the task associated to it: [{}]",
+			starting_task.get_name(),
+			selected_option.get_name(),
+			selected_option.get_task_name(),
+		)).suggestion("Please consult the log above to ensure no fetch errors were enounctered.");
+	}
+	let task = potential_option_as_task.unwrap();
+
+	let final_args = if let Some(args_ref) = selected_option.get_args() {
+		args_ref.clone()
+	} else {
+		Vec::new()
+	};
+
+	let mut size = 0;
+
+	// Now let's add this task to the list of things to run.
+	match *task.get_type() {
+		TaskType::Command => {
+			size += add_command_task_to_execution_list(
+				task,
+				fetcher,
+				executors,
+				root_directory,
+				&final_args,
+				pipeline_id,
+				work_queue,
+			)
+			.await?
+		}
+		TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
+			size += build_ordered_execution_list(
+				tasks,
+				task,
+				fetcher,
+				executors,
+				root_directory,
+				&final_args,
+				pipeline_id,
+				work_queue,
+			)
+			.await?
+		}
+	};
+
+	Ok((false, size))
+}
+
+/// Add a pipeline type task to the current execution list.
+async fn add_pipeline_to_execution_list<'a, 'b, H: BuildHasher>(
+	tasks: &'a HashMap<String, TaskConf, H>,
+	starting_task: &'a TaskConf,
+	fetcher: &'a FetcherRepository,
+	executors: &'a mut ExecutorRepository,
+	root_directory: PathBuf,
+	work_queue: &'a mut WorkQueue<'b>,
+) -> Result<usize> {
+	let mut size = 0;
+
+	let optional_steps = starting_task.get_steps();
+	if optional_steps.is_none() {
+		return Err(eyre!(
+			"Pipeline task: [{}] does not have any steps.",
+			starting_task.get_name(),
+		))
+		.suggestion("If you meant to have a pipeline with no steps use an empty array: `[]`.");
+	}
+
+	let steps = optional_steps.unwrap();
+	let my_pid = new_pipeline_id();
+	debug!(
+		"Pipeline task: [{}] has been given the pipeline-id: [{}]",
+		starting_task.get_name(),
+		my_pid,
+	);
+
+	let mut executable_steps = Vec::new();
+	let mut executable_steps_as_queue = WorkQueue::VecQueue(&mut executable_steps);
+
+	for step in steps {
+		let potential_task = tasks.get(step.get_task_name());
+		if potential_task.is_none() {
+			return Err(eyre!(
+				"The Pipeline task: [{}], on step: [{}], failed to find the task associated to it: [{}]",
+				starting_task.get_name(),
+				step.get_name(),
+				step.get_task_name()
+			))
+			.suggestion(
+				"Please consult the log above to ensure no fetch errors were encountered.",
+			);
+		}
+		let task = potential_task.unwrap();
+
+		let final_args = if let Some(args_ref) = step.get_args() {
+			args_ref.clone()
+		} else {
+			Vec::new()
+		};
+
+		match *task.get_type() {
+			TaskType::Command => {
+				add_command_task_to_execution_list(
+					task,
+					fetcher,
+					executors,
+					root_directory.clone(),
+					&final_args,
+					my_pid.clone(),
+					&mut executable_steps_as_queue,
+				)
+				.await?;
+			}
+			TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
+				build_ordered_execution_list(
+					tasks,
+					task,
+					fetcher,
+					executors,
+					root_directory.clone(),
+					&final_args,
+					my_pid.clone(),
+					&mut executable_steps_as_queue,
+				)
+				.await?;
+			}
+		}
+	}
+
+	size += executable_steps.len();
+	match work_queue {
+		WorkQueue::Queue(queue) => queue.push(WorkUnit::Pipeline(executable_steps)),
+		WorkQueue::VecQueue(vec) => vec.extend(executable_steps),
+	}
+
+	Ok(size)
+}
+
+async fn add_parallel_pipeline_to_execution_list<'a, 'b, H: BuildHasher>(
+	tasks: &'a HashMap<String, TaskConf, H>,
+	starting_task: &'a TaskConf,
+	fetcher: &'a FetcherRepository,
+	executors: &'a mut ExecutorRepository,
+	root_directory: PathBuf,
+	work_queue: &'a mut WorkQueue<'b>,
+) -> Result<usize> {
+	let mut size = 0;
+
+	let optional_steps = starting_task.get_steps();
+	if optional_steps.is_none() {
+		return Err(eyre!(
+			"Parallel-Pipeline task: [{}] does not have any steps.",
+			starting_task.get_name(),
+		))
+		.suggestion(
+			"If you meant to have a parallel-pipeline with no steps use an empty array: `[]`.",
+		);
+	}
+
+	let steps = optional_steps.unwrap();
+	for step in steps {
+		let potential_task = tasks.get(step.get_task_name());
+		if potential_task.is_none() {
+			return Err(eyre!(
+				"The Parallel-Pipeline task: [{}], on step: [{}], failed to find the task associated to it: [{}]",
+				starting_task.get_name(),
+				step.get_name(),
+				step.get_task_name()
+			))
+			.suggestion(
+				"Please consult the log above to ensure no fetch errors were encountered.",
+			);
+		}
+		let task = potential_task.unwrap();
+
+		let final_args = if let Some(args_ref) = step.get_args() {
+			args_ref.clone()
+		} else {
+			Vec::new()
+		};
+
+		let task_pid = new_pipeline_id();
+		debug!(
+			"Parallel-Pipeline task: [{}], inner task: [{}] has been given the pipeline-id: [{}]",
+			starting_task.get_name(),
+			task.get_name(),
+			task_pid,
+		);
+
+		match *task.get_type() {
+			TaskType::Command => {
+				size += add_command_task_to_execution_list(
+					task,
+					fetcher,
+					executors,
+					root_directory.clone(),
+					&final_args,
+					task_pid,
+					work_queue,
+				)
+				.await?
+			}
+			TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
+				size += build_ordered_execution_list(
+					tasks,
+					task,
+					fetcher,
+					executors,
+					root_directory.clone(),
+					&final_args,
+					task_pid,
+					work_queue,
+				)
+				.await?
+			}
+		}
+	}
+
+	Ok(size)
+}
+
+/// Taking the full (valid) map of tasks, and a `starting_task` to start with
+/// build a full list of the tasks that need to be executed, in which order.
+#[allow(clippy::too_many_arguments)]
+#[must_use]
+pub fn build_ordered_execution_list<'a, 'b, H: BuildHasher>(
+	tasks: &'a HashMap<String, TaskConf, H>,
+	starting_task: &'a TaskConf,
+	fetcher: &'a FetcherRepository,
+	executors: &'a mut ExecutorRepository,
+	root_directory: PathBuf,
+	arguments: &'a [String],
+	pipeline_id: String,
+	work_queue: &'a mut WorkQueue<'b>,
 ) -> Pin<Box<dyn 'a + Future<Output = Result<usize>>>> {
 	Box::pin(async move {
 		let mut size = 0;
 
 		match *starting_task.get_type() {
 			TaskType::Command => {
-				match work_queue {
-					WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
-						command_to_executable_task(
-							pipeline_id,
-							starting_task,
-							fetcher,
-							executors,
-							root_directory,
-							Vec::from(arguments),
-						)
-						.await?,
-					)),
-					WorkQueue::VecQueue(vec) => vec.push(
-						command_to_executable_task(
-							pipeline_id,
-							starting_task,
-							fetcher,
-							executors,
-							root_directory,
-							Vec::from(arguments),
-						)
-						.await?,
-					),
-				}
-				size += 1;
+				size += add_command_task_to_execution_list(
+					starting_task,
+					fetcher,
+					executors,
+					root_directory,
+					arguments,
+					pipeline_id,
+					work_queue,
+				)
+				.await?
 			}
 			TaskType::Oneof => {
-				// Parse a `oneof` type into a list of tasks.
-				// This _will_ recurse if an option is selected that is not a command task.
+				let (exit_early, extra_size) = add_oneof_task_to_execution_list(
+					tasks,
+					starting_task,
+					fetcher,
+					executors,
+					root_directory,
+					arguments,
+					pipeline_id,
+					work_queue,
+				)
+				.await?;
 
-				// First make sure someone has specified an options block for a oneof type.
-				let options = starting_task.get_options();
-				if options.is_none() {
-					return Err(eyre!(
-						"Task type is marked oneof but has no options: [{}]",
-						starting_task.get_name()
-					))
-					.suggestion(
-						"If you really meant to have no options specify an empty array: `[]`.",
-					);
-				}
-				let options = options.unwrap();
-
-				// If someone specified an empty options array, assume it's intentional.
-				if options.is_empty() {
+				size += extra_size;
+				if exit_early {
 					return Ok(size);
-				}
-				// If it's not an empty set of options we need to know how to choose one of the tasks.
-				if arguments.is_empty() {
-					return Err(eyre!(
-						"The OneOf task: [{}] was selected, but was provided no arguments to know which option to choose.",
-						starting_task.get_name(),
-					));
-				}
-
-				// Try to grab the option based on the first argument.
-				// The other arguments are dropped on purpose.
-				let potential_option = options
-					.iter()
-					.find(|option| option.get_name() == arguments[0]);
-				if potential_option.is_none() {
-					return Err(eyre!(
-						"The OneOf task: [{}] was selected, and attempted to find the option: [{}], but that option was not found.",
-						starting_task.get_name(),
-						arguments[0],
-					));
-				}
-				let selected_option = potential_option.unwrap();
-
-				// Try to turn that option into a relevant task.
-				//
-				// Remember we may have failed fetching from a remote endpoint.
-				// so it may not be in the TaskGraph.
-				let potential_option_as_task = tasks.get(selected_option.get_task_name());
-				if potential_option_as_task.is_none() {
-					return Err(eyre!(
-						"The OneOf task: [{}], selected the option: [{}], but failed to find the task associated to it: [{}]",
-						starting_task.get_name(),
-						selected_option.get_name(),
-						selected_option.get_task_name(),
-					)).suggestion("Please consult the log above to ensure no fetch errors were enounctered.");
-				}
-				let task = potential_option_as_task.unwrap();
-
-				let final_args = if let Some(args_ref) = selected_option.get_args() {
-					args_ref.clone()
-				} else {
-					Vec::new()
-				};
-
-				// Now let's add this task to the list of things to run.
-				match *task.get_type() {
-					TaskType::Command => {
-						match work_queue {
-							WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
-								command_to_executable_task(
-									pipeline_id,
-									task,
-									fetcher,
-									executors,
-									root_directory,
-									final_args,
-								)
-								.await?,
-							)),
-							WorkQueue::VecQueue(vec) => vec.push(
-								command_to_executable_task(
-									pipeline_id,
-									task,
-									fetcher,
-									executors,
-									root_directory,
-									final_args,
-								)
-								.await?,
-							),
-						}
-
-						size += 1;
-					}
-					TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
-						size += build_ordered_execution_list(
-							tasks,
-							task,
-							fetcher,
-							executors,
-							root_directory,
-							&final_args,
-							pipeline_id,
-							work_queue,
-						)
-						.await?;
-					}
 				}
 			}
 			TaskType::Pipeline => {
-				let optional_steps = starting_task.get_steps();
-				if optional_steps.is_none() {
-					return Err(eyre!(
-						"Pipeline task: [{}] does not have any steps.",
-						starting_task.get_name(),
-					))
-					.suggestion(
-						"If you meant to have a pipeline with no steps use an empty array: `[]`.",
-					);
-				}
-
-				let steps = optional_steps.unwrap();
-				let my_pid = new_pipeline_id();
-				debug!(
-					"Pipeline task: [{}] has been given the pipeline-id: [{}]",
-					starting_task.get_name(),
-					my_pid,
-				);
-
-				let mut executable_steps = Vec::new();
-				let mut executable_steps_as_queue = WorkQueue::VecQueue(&mut executable_steps);
-
-				for step in steps {
-					let potential_task = tasks.get(step.get_task_name());
-					if potential_task.is_none() {
-						return Err(eyre!(
-							"The Pipeline task: [{}], on step: [{}], failed to find the task associated to it: [{}]",
-							starting_task.get_name(),
-							step.get_name(),
-							step.get_task_name()
-						)).suggestion("Please consult the log above to ensure no fetch errors were encountered.");
-					}
-					let task = potential_task.unwrap();
-
-					let final_args = if let Some(args_ref) = step.get_args() {
-						args_ref.clone()
-					} else {
-						Vec::new()
-					};
-
-					match *task.get_type() {
-						TaskType::Command => {
-							match executable_steps_as_queue {
-								WorkQueue::Queue(_) => unreachable!(),
-								WorkQueue::VecQueue(ref mut vec) => vec.push(
-									command_to_executable_task(
-										my_pid.clone(),
-										task,
-										fetcher,
-										executors,
-										root_directory.clone(),
-										final_args,
-									)
-									.await?,
-								),
-							};
-						}
-						TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
-							if let Some(args) = step.get_args() {
-								build_ordered_execution_list(
-									tasks,
-									task,
-									fetcher,
-									executors,
-									root_directory.clone(),
-									&args,
-									my_pid.clone(),
-									&mut executable_steps_as_queue,
-								)
-								.await?;
-							} else {
-								let args = Vec::new();
-								build_ordered_execution_list(
-									tasks,
-									task,
-									fetcher,
-									executors,
-									root_directory.clone(),
-									&args,
-									my_pid.clone(),
-									&mut executable_steps_as_queue,
-								)
-								.await?;
-							}
-						}
-					}
-				}
-
-				size += executable_steps.len();
-				match work_queue {
-					WorkQueue::Queue(queue) => queue.push(WorkUnit::Pipeline(executable_steps)),
-					WorkQueue::VecQueue(vec) => vec.extend(executable_steps),
-				}
+				size += add_pipeline_to_execution_list(
+					tasks,
+					starting_task,
+					fetcher,
+					executors,
+					root_directory,
+					work_queue,
+				)
+				.await?;
 			}
 			TaskType::ParallelPipeline => {
-				let optional_steps = starting_task.get_steps();
-				if optional_steps.is_none() {
-					return Err(eyre!(
-						"Parallel-Pipeline task: [{}] does not have any steps.",
-						starting_task.get_name(),
-					)).suggestion("If you meant to have a parallel-pipeline with no steps use an empty array: `[]`.");
-				}
-
-				let steps = optional_steps.unwrap();
-				for step in steps {
-					let potential_task = tasks.get(step.get_task_name());
-					if potential_task.is_none() {
-						return Err(eyre!(
-							"The Parallel-Pipeline task: [{}], on step: [{}], failed to find the task associated to it: [{}]",
-							starting_task.get_name(),
-							step.get_name(),
-							step.get_task_name()
-						)).suggestion("Please consult the log above to ensure no fetch errors were encountered.");
-					}
-					let task = potential_task.unwrap();
-
-					let final_args = if let Some(args_ref) = step.get_args() {
-						args_ref.clone()
-					} else {
-						Vec::new()
-					};
-
-					let task_pid = new_pipeline_id();
-					debug!(
-						"Parallel-Pipeline task: [{}], inner task: [{}] has been given the pipeline-id: [{}]",
-						starting_task.get_name(),
-						task.get_name(),
-						task_pid,
-					);
-
-					match *task.get_type() {
-						TaskType::Command => {
-							match work_queue {
-								WorkQueue::Queue(queue) => queue.push(WorkUnit::SingleTask(
-									command_to_executable_task(
-										task_pid,
-										task,
-										fetcher,
-										executors,
-										root_directory.clone(),
-										final_args,
-									)
-									.await?,
-								)),
-								WorkQueue::VecQueue(vec) => vec.push(
-									command_to_executable_task(
-										task_pid,
-										task,
-										fetcher,
-										executors,
-										root_directory.clone(),
-										final_args,
-									)
-									.await?,
-								),
-							};
-
-							size += 1;
-						}
-						TaskType::Oneof | TaskType::Pipeline | TaskType::ParallelPipeline => {
-							size += build_ordered_execution_list(
-								tasks,
-								task,
-								fetcher,
-								executors,
-								root_directory.clone(),
-								&final_args,
-								task_pid,
-								work_queue,
-							)
-							.await?;
-						}
-					}
-				}
+				size += add_parallel_pipeline_to_execution_list(
+					tasks,
+					starting_task,
+					fetcher,
+					executors,
+					root_directory,
+					work_queue,
+				)
+				.await?;
 			}
 		}
 
@@ -603,7 +652,6 @@ pub async fn fetch_helpers(tlc: &TopLevelConf, fr: &FetcherRepository) -> Result
 /// `fetcher`: used for fetching particular files/executors/etc.
 /// `executors`: the list of executors.
 /// `root_directory`: the root directory of the project.
-#[allow(clippy::cast_possible_wrap, clippy::type_complexity)]
 #[must_use]
 pub fn build_concurrent_execution_list<'a, H: BuildHasher>(
 	tasks: &'a HashMap<String, TaskConf, H>,
@@ -640,6 +688,30 @@ pub fn build_concurrent_execution_list<'a, H: BuildHasher>(
 						&mut as_queue,
 					)
 					.await?;
+				} else if *task.get_type() == TaskType::Oneof && task.get_options().is_some() {
+					for option in task.get_options().unwrap() {
+						if option.get_tags().is_none() {
+							continue;
+						}
+
+						let uniq_tags_on_option: HashSet<&String> =
+							HashSet::from_iter(option.get_tags().unwrap().iter());
+						if !has_unique_elements(
+							unique_tags.iter().chain(uniq_tags_on_option.iter()),
+						) {
+							size += build_ordered_execution_list(
+								tasks,
+								task,
+								fetcher,
+								executors,
+								root_directory.clone(),
+								&[option.get_name().to_owned()],
+								new_pipeline_id(),
+								&mut as_queue,
+							)
+							.await?;
+						}
+					}
 				}
 			}
 		}

@@ -6,7 +6,7 @@ use crate::{
 	config::types::{LocationType, TaskConf, TaskConfFile, TaskType, TopLevelConf},
 	fetch::FetcherRepository,
 	strsim::add_did_you_mean_text,
-	yaml_err::contextualize_yaml_err,
+	yaml_err::contextualize,
 };
 
 use color_eyre::{
@@ -16,8 +16,8 @@ use color_eyre::{
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
-pub mod execution;
-pub mod fs;
+pub(crate) mod execution;
+pub(crate) mod fs;
 
 /// Describes the full "graph" of tasks.
 ///
@@ -31,6 +31,75 @@ pub struct TaskGraph {
 }
 
 impl TaskGraph {
+	fn parse_task(
+		task_conf_file_src: &str,
+		task_conf: TaskConf,
+		internal_task_names: &mut HashSet<String>,
+		unsatisfied_task_names: &mut HashSet<String>,
+		flatenned_tasks: &mut HashMap<String, TaskConf>,
+	) -> Result<()> {
+		let task_name = task_conf.get_name();
+
+		// If we've already seen this task... it's an error.
+		// Task names need to be globally unique.
+		if let Some(other_task_conf) = flatenned_tasks.get(task_name) {
+			return Err(eyre!(
+				"Found duplicate task named: [{}]. Originally defined in config at: [{}], found again in config at: [{}]",
+				task_name,
+				other_task_conf.get_source_path(),
+				task_conf_file_src,
+			));
+		}
+
+		// If it's a 'oneof', 'parallel-pipeline', or 'pipeline' type, we
+		// need to parse it's children so we can ensure everything is valid.
+		//
+		// We call `internal_task_names.remove()` always (it'll be a no-op if it
+		// doesn't contain the key). The `internal_task_names` are tasks that are marked
+		// `internal: true`, but don't yet have a reference. By being in a
+		// oneof/parallel-pipeline/pipeline they themselves have a reference.
+		//
+		// Next we check if the option "exists", if not. we add it to `unsatisfied_task_names`
+		// so it can be checked later.
+		let ttype = task_conf.get_type();
+		match ttype {
+			TaskType::Oneof => {
+				if let Some(options) = task_conf.get_options() {
+					for option in options {
+						internal_task_names.remove(option.get_task_name());
+						if !flatenned_tasks.contains_key(option.get_task_name()) {
+							unsatisfied_task_names.insert(option.get_task_name().to_owned());
+						}
+					}
+				}
+			}
+			TaskType::Pipeline | TaskType::ParallelPipeline => {
+				if let Some(steps) = task_conf.get_steps() {
+					for step in steps {
+						internal_task_names.remove(step.get_task_name());
+						if !flatenned_tasks.contains_key(step.get_task_name()) {
+							unsatisfied_task_names.insert(step.get_task_name().to_owned());
+						}
+					}
+				}
+			}
+			TaskType::Command => {}
+		}
+
+		// If we're an internal task, and someone hasn't referenced us already
+		// go ahead and add ourselves to the list of "waiting for a ref" set.
+		if task_conf.is_internal() && !unsatisfied_task_names.contains(task_name) {
+			internal_task_names.insert(task_name.to_owned());
+		}
+		// NO-OP if we're not there, otherwise let people know we exist.
+		unsatisfied_task_names.remove(task_name);
+
+		// Add ourselves to the final map.
+		flatenned_tasks.insert(task_name.to_owned(), task_conf);
+
+		Ok(())
+	}
+
 	/// Create a new `TaskGraph`.
 	///
 	/// NOTE: this will completely parse all the task files (remote or otherwise),
@@ -44,7 +113,6 @@ impl TaskGraph {
 	/// - When there is an error fetching the tasks yaml files.
 	/// - When the task yaml files are invalid yaml.
 	/// - When the task yaml file has some sort of invariant error.
-	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub async fn new(tlc: &TopLevelConf, fetcher: &FetcherRepository) -> Result<Self> {
 		let span = tracing::info_span!("finding_tasks");
 		let _guard = span.enter();
@@ -75,7 +143,7 @@ impl TaskGraph {
 					.await
 					.wrap_err(format!(
 						"Failed fetching tasks specified at `.dl/config.yml:task_locations:{}`",
-						tl_idx
+						tl_idx,
 					));
 
 				// For HTTP errors we're going to try to continue, if your FS fails
@@ -85,18 +153,17 @@ impl TaskGraph {
 						warn!("{:?}", err);
 						warn!("Trying to continue, incase the failing remote endpoint doesn't matter for this run.");
 						allowing_dag_errors = true;
-					} else {
-						warn!("Failed to fetch a file from the filesystem! Assuming this is a critical error.");
-						return Err(err.wrap_err(format!(
-							"Failed to read the file: [{}] from the filesystem",
-							task_location.get_at()
-						)));
+						continue;
 					}
-					continue;
+
+					warn!("Failed to fetch a file from the filesystem! Assuming this is a critical error.");
+					return Err(err.wrap_err(format!(
+						"Failed to read the file: [{}] from the filesystem",
+						task_location.get_at()
+					)));
 				}
 
-				let fetched_tasks = resulting_fetched_tasks.unwrap();
-				for task_conf_file in fetched_tasks {
+				for task_conf_file in resulting_fetched_tasks.unwrap() {
 					let task_yaml_res =
 						serde_yaml::from_slice::<TaskConfFile>(&task_conf_file.get_contents());
 					if let Err(tye) = task_yaml_res {
@@ -107,7 +174,7 @@ impl TaskGraph {
 							continue;
 						}
 
-						return contextualize_yaml_err(
+						return contextualize(
 							Err(tye),
 							task_conf_file.get_source(),
 							&String::from_utf8_lossy(task_conf_file.get_contents()).to_string()
@@ -122,66 +189,13 @@ impl TaskGraph {
 					// we're reading. So we have to allow for cases where a task _may_ not
 					// be parsed yet.
 					for task_conf in task_yaml.consume_tasks() {
-						let task_name = task_conf.get_name();
-
-						// If we've already seen this task... it's an error.
-						// Task names need to be globally unique.
-						if let Some(other_task_conf) = flatenned_tasks.get(task_name) {
-							return Err(eyre!(
-								"Found duplicate task named: [{}]. Originally defined in config at: [{}], found again in config at: [{}]",
-								task_name,
-								other_task_conf.get_source_path(),
-								task_conf_file.get_source(),
-							));
-						}
-
-						// If it's a 'oneof', 'parallel-pipeline', or 'pipeline' type, we
-						// need to parse it's children so we can ensure everything is valid.
-						//
-						// We call `internal_task_names.remove()` always (it'll be a no-op if it
-						// doesn't contain the key). The `internal_task_names` are tasks that are marked
-						// `internal: true`, but don't yet have a reference. By being in a
-						// oneof/parallel-pipeline/pipeline they themselves have a reference.
-						//
-						// Next we check if the option "exists", if not. we add it to `unsatisfied_task_names`
-						// so it can be checked later.
-						let ttype = task_conf.get_type();
-						match ttype {
-							TaskType::Oneof => {
-								if let Some(options) = task_conf.get_options() {
-									for option in options {
-										internal_task_names.remove(option.get_task_name());
-										if !flatenned_tasks.contains_key(option.get_task_name()) {
-											unsatisfied_task_names
-												.insert(option.get_task_name().to_owned());
-										}
-									}
-								}
-							}
-							TaskType::Pipeline | TaskType::ParallelPipeline => {
-								if let Some(steps) = task_conf.get_steps() {
-									for step in steps {
-										internal_task_names.remove(step.get_task_name());
-										if !flatenned_tasks.contains_key(step.get_task_name()) {
-											unsatisfied_task_names
-												.insert(step.get_task_name().to_owned());
-										}
-									}
-								}
-							}
-							TaskType::Command => {}
-						}
-
-						// If we're an internal task, and someone hasn't referenced us already
-						// go ahead and add ourselves to the list of "waiting for a ref" set.
-						if task_conf.is_internal() && !unsatisfied_task_names.contains(task_name) {
-							internal_task_names.insert(task_name.to_owned());
-						}
-						// NO-OP if we're not there, otherwise let people know we exist.
-						unsatisfied_task_names.remove(task_name);
-
-						// Add ourselves to the final map.
-						flatenned_tasks.insert(task_name.to_owned(), task_conf);
+						Self::parse_task(
+							task_conf_file.get_source(),
+							task_conf,
+							&mut internal_task_names,
+							&mut unsatisfied_task_names,
+							&mut flatenned_tasks,
+						)?;
 					}
 				}
 			}
@@ -231,12 +245,6 @@ impl TaskGraph {
 				flattened_tasks: HashMap::new(),
 			})
 		}
-	}
-
-	/// Get a full list of the tasks that are available.
-	#[must_use]
-	pub fn get_all_tasks(&self) -> &HashMap<String, TaskConf> {
-		&self.flattened_tasks
 	}
 
 	/// Consume the overlying tasks type, and get all the tasks.

@@ -88,7 +88,7 @@ fn did_you_mean_variant(err_msg: &str) -> Option<Vec<String>> {
 /// # Errors
 ///
 /// - If the first parameter error'd.
-pub fn contextualize_yaml_err<T>(
+pub fn contextualize<T>(
 	result: Result<T, YamlError>,
 	src_filepath: &str,
 	src_data: &str,

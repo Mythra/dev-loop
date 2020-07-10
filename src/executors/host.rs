@@ -4,20 +4,20 @@
 use crate::{
 	config::types::NeedsRequirement,
 	dirs::get_tmp_dir,
-	executors::{CompatibilityStatus, Executor},
+	executors::{
+		shared::{create_entrypoint, create_executor_shared_dir},
+		CompatibilityStatus, Executor as ExecutorTrait,
+	},
 	tasks::execution::preparation::ExecutableTask,
 };
 
-use async_std::{
-	fs::{read_dir, remove_dir_all},
-	prelude::*,
-};
 use color_eyre::{
 	eyre::{eyre, WrapErr},
 	Result, Section,
 };
 use crossbeam_channel::Sender;
 use std::{
+	fs::{read_dir, remove_dir_all},
 	io::{BufRead, BufReader, Error as IoError},
 	path::PathBuf,
 	process::{Command, Stdio},
@@ -30,45 +30,61 @@ use tracing::{debug, error, warn};
 
 /// Determine if an error is an "ETXTFILEBUSY" error, e.g. someone
 /// else is actively executing bash.
+#[cfg(any(
+	target_os = "macos",
+	target_os = "ios",
+	target_os = "linux",
+	target_os = "android",
+	target_os = "freebsd",
+	target_os = "dragonfly",
+	target_os = "openbsd",
+	target_os = "netbsd"
+))]
 fn is_etxtfilebusy(os_err: &IoError) -> bool {
-	if cfg!(target_os = "macos")
-		|| cfg!(target_os = "ios")
-		|| cfg!(target_os = "linux")
-		|| cfg!(target_os = "android")
-		|| cfg!(target_os = "freebsd")
-		|| cfg!(target_os = "dragonfly")
-		|| cfg!(target_os = "openbsd")
-		|| cfg!(target_os = "netbsd")
-	{
-		if let Some(os_err_code) = os_err.raw_os_error() {
-			// This stands for ETXTBUSY, since it's pretty weird to match on
-			// message of rust.
-			//
-			// This seems to be correct for all OSs, listed above.
-			//  - Linux: https://mariadb.com/kb/en/operating-system-error-codes/
-			//  - OSX/iOS: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/intro.2.html
-			//  - FreeBSD: https://www.freebsd.org/cgi/man.cgi?query=errno&sektion=2&manpath=freebsd-release-ports
-			//  - Android: https://android.googlesource.com/kernel/lk/+/dima/for-travis/include/errno.h
-			//  - DragonflyBSD: https://man.dragonflybsd.org/?command=errno&section=2
-			//  - OpenBSD: https://man.openbsd.org/errno.2
-			//  - NetBSD: https://netbsd.gw.com/cgi-bin/man-cgi?errno+2+NetBSD-6.0
-			if os_err_code == 26 {
-				return true;
-			}
+	if let Some(os_err_code) = os_err.raw_os_error() {
+		// This stands for ETXTBUSY, since it's pretty weird to match on
+		// message of rust.
+		//
+		// This seems to be correct for all OSs, listed above.
+		//  - Linux: https://mariadb.com/kb/en/operating-system-error-codes/
+		//  - OSX/iOS: https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/intro.2.html
+		//  - FreeBSD: https://www.freebsd.org/cgi/man.cgi?query=errno&sektion=2&manpath=freebsd-release-ports
+		//  - Android: https://android.googlesource.com/kernel/lk/+/dima/for-travis/include/errno.h
+		//  - DragonflyBSD: https://man.dragonflybsd.org/?command=errno&section=2
+		//  - OpenBSD: https://man.openbsd.org/errno.2
+		//  - NetBSD: https://netbsd.gw.com/cgi-bin/man-cgi?errno+2+NetBSD-6.0
+		if os_err_code == 26 {
+			return true;
 		}
 	}
 
 	false
 }
 
-/// Represents the actual executor for the host system.
+/// Determine if an error is an "ETXTFILEBUSY" error, e.g. someone
+/// else is actively executing bash.
+#[cfg(not(any(
+	target_os = "macos",
+	target_os = "ios",
+	target_os = "linux",
+	target_os = "android",
+	target_os = "freebsd",
+	target_os = "dragonfly",
+	target_os = "openbsd",
+	target_os = "netbsd"
+)))]
+fn is_etxtfilebusy(os_err: &IoError) -> bool {
+	false
+}
+
+/// Represents the actual `Executor` for the host system.
 #[derive(Debug)]
-pub struct HostExecutor {
+pub struct Executor {
 	/// The root of the project, so we know where to "cd" into.
 	project_root: String,
 }
 
-impl HostExecutor {
+impl Executor {
 	/// Create a new host executor, with nothing but the project root.
 	///
 	/// # Errors
@@ -92,17 +108,16 @@ impl HostExecutor {
 	}
 
 	/// Performs a clean up of all host resources.
-	#[allow(clippy::cognitive_complexity)]
 	pub async fn clean() {
 		// To clean all we would possibly have leftover is files in $TMPDIR.
 		// So we iterate through everything in the temporary directory...
-		if let Ok(mut entries) = read_dir(get_tmp_dir()).await {
-			while let Some(resulting_entry) = entries.next().await {
+		if let Ok(entries) = read_dir(get_tmp_dir()) {
+			for resulting_entry in entries {
 				// Did we get something?
 				if let Ok(entry_de) = resulting_entry {
 					let entry = entry_de.path();
 					// If it's not a directory ignore it.
-					if !entry.is_dir().await {
+					if !entry.is_dir() {
 						debug!(
 							"Found a non-directory in your temporary directory, skipping: [{:?}]",
 							entry
@@ -132,7 +147,7 @@ impl HostExecutor {
 					}
 
 					// If it is... remove the directory and everything underneath it.
-					if let Err(remove_err) = remove_dir_all(&entry).await {
+					if let Err(remove_err) = remove_dir_all(&entry) {
 						warn!(
 							"{:?}",
 							Err::<(), IoError>(remove_err)
@@ -147,7 +162,7 @@ impl HostExecutor {
 		}
 	}
 
-	/// Determines if this `HostExecutor` is compatible with the system.
+	/// Determines if this `Executor` is compatible with the system.
 	#[must_use]
 	pub fn is_compatible() -> CompatibilityStatus {
 		// This command expands to: `bash -c "hash bash"`, while this may sound like
@@ -179,7 +194,7 @@ impl HostExecutor {
 }
 
 #[async_trait::async_trait]
-impl Executor for HostExecutor {
+impl ExecutorTrait for Executor {
 	#[must_use]
 	fn meets_requirements(&self, reqs: &[NeedsRequirement]) -> bool {
 		let mut meets_reqs = true;
@@ -194,13 +209,6 @@ impl Executor for HostExecutor {
 		meets_reqs
 	}
 
-	#[allow(
-		clippy::cognitive_complexity,
-		clippy::suspicious_else_formatting,
-		clippy::too_many_lines,
-		clippy::unnecessary_unwrap,
-		unused_assignments
-	)]
 	#[must_use]
 	async fn execute(
 		&self,
@@ -209,90 +217,30 @@ impl Executor for HostExecutor {
 		helper_src_line: &str,
 		task: &ExecutableTask,
 		worker_count: usize,
-	) -> isize {
-		// Execute a particular task:
-		//
-		//  1. Create a temporary directory for the pipeline id, and the task name.
-		//  2. Write the task file the user specified.
-		//  3. Write an "entrypoint" that sources in the helpers, and calls
-		//     the script.
-		//  4. Execute the script and wait for it to finish.
-
+	) -> Result<i32> {
 		debug!("Host Executor executing task: [{}]", task.get_task_name());
 
-		// Create the pipeline directory.
-		let mut tmp_path = get_tmp_dir();
-		tmp_path.push(task.get_pipeline_id().to_owned() + "-dl-host");
-		let res = async_std::fs::create_dir_all(tmp_path.clone()).await;
-		if let Err(dir_err) = res {
-			error!(
-				"Failed to create pipeline directory due to: [{:?}]",
-				dir_err
-			);
-			return 10;
-		}
-
-		// Write the task file.
-		let mut regular_task = tmp_path.clone();
-		regular_task.push(task.get_task_name().to_owned() + ".sh");
-		debug!("Host Executor task writing to path: [{:?}]", regular_task);
-		let write_res =
-			async_std::fs::write(&regular_task, task.get_contents().get_contents()).await;
-		if let Err(write_err) = write_res {
-			error!("Failed to write script file due to: [{:?}]", write_err);
-			return 10;
-		}
-		let path_as_str = regular_task.to_str().unwrap();
-
-		// Write the entrypoint script.
-		let entry_point_file = format!(
-			"#!/usr/bin/env bash
-
-cd {project_root}
-
-# Source Helpers
-{helper}
-
-eval \"$(declare -F | sed -e 's/-f /-fx /')\"
-
-{script} {arg_str}",
-			project_root = self.project_root,
-			helper = helper_src_line,
-			script = path_as_str,
-			arg_str = task.get_arg_string(),
-		);
-		tmp_path.push(task.get_task_name().to_owned() + "-entrypoint.sh");
+		// Write out the small wrapper script that sources in the helpers, and runs the task.
+		let shared_dir = create_executor_shared_dir(task.get_pipeline_id())
+			.wrap_err("Failed to create pipeline directory")?;
 		debug!(
-			"Host task entrypoint is being written too: [{:?}]",
-			tmp_path
+			"Host Executor will be using temporary directory: [{:?}]",
+			shared_dir
 		);
-		let write_res = async_std::fs::write(&tmp_path, entry_point_file).await;
-		if let Err(write_err) = write_res {
-			error!("Failed to write entrypoint file due to: [{:?}]", write_err);
-			return 10;
-		}
+		let entrypoint_path = create_entrypoint(
+			&self.project_root,
+			&get_tmp_dir().to_string_lossy().to_string(),
+			shared_dir,
+			helper_src_line,
+			task,
+			false,
+			None,
+			None,
+		)?;
+		let entrypoint_as_str = entrypoint_path.to_str().unwrap();
 
-		if cfg!(target_family = "unix") {
-			use std::os::unix::fs::PermissionsExt;
-			let executable_permissions = std::fs::Permissions::from_mode(0o777);
-
-			if let Err(permission_err) = std::fs::set_permissions(&tmp_path, executable_permissions.clone()).wrap_err(
-				"Failed to mark temporary path as world-wide readable/writable/executable."
-			).suggestion("If the error isn't immediately clear, please file an issue as it's probably a bug in dev-loop with your system.") {
-				error!("{:?}", permission_err);
-				return 10;
-			}
-			if let Err(permission_err) = std::fs::set_permissions(&regular_task, executable_permissions).wrap_err(
-				"Failed to mark task file as world-wide readable/writable/executable."
-			).suggestion("If the error isn't immediately clear, please file an issue as it's probably a bug in dev-loop with your system.") {
-				error!("{:?}", permission_err);
-				return 10;
-			}
-		}
-
-		let entrypoint_as_str = tmp_path.to_str().unwrap();
-
-		// Spawn the task.
+		// Spawn the command itself, retry if we get an ETXTFILEBUSY error incase we try to start two
+		// bash processes at the same time.
 		let mut command_res = Command::new(entrypoint_as_str)
 			.stdin(Stdio::null())
 			.stdout(Stdio::piped())
@@ -307,22 +255,16 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 					.stderr(Stdio::piped())
 					.spawn();
 			} else {
-				error!(
-					"{:?}",
-					Err::<(), IoError>(command_err)
-						.wrap_err("Failed to run bash script on the host system")
-						.note(format!("The script is located at: [{}]", entrypoint_as_str,))
-						.unwrap_err()
-				);
-				return 10;
+				return Err(command_err)
+					.wrap_err("Failed to run bash script on the host system")
+					.note(format!("The script is located at: [{}]", entrypoint_as_str,));
 			}
 		}
-		let mut child = command_res.unwrap();
+		let mut command_pid = command_res.unwrap();
 
 		let has_finished = Arc::new(AtomicBool::new(false));
-
-		let mut child_stdout = BufReader::new(child.stdout.take().unwrap());
-		let mut child_stderr = BufReader::new(child.stderr.take().unwrap());
+		let mut child_stdout = BufReader::new(command_pid.stdout.take().unwrap());
+		let mut child_stderr = BufReader::new(command_pid.stderr.take().unwrap());
 
 		let flush_channel_clone = log_channel.clone();
 		let flush_task_name = task.get_task_name().to_owned();
@@ -356,15 +298,15 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 			}
 		});
 
-		let mut rc = 0;
+		let rc;
 		// Loop until completion.
 		loop {
 			// Has the child exited?
-			let child_opt_res = child.try_wait();
+			let child_opt_res = command_pid.try_wait();
 			if let Err(child_err) = child_opt_res {
 				error!("Failed to read child status: [{:?}]", child_err);
 				rc = 10;
-				let _ = child.kill();
+				let _ = command_pid.kill();
 				break;
 			}
 			let child_opt = child_opt_res.unwrap();
@@ -375,9 +317,9 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 
 			// Have we been requested to stop?
 			if should_stop.load(Ordering::Acquire) {
-				error!("HostExecutor was told to stop! killing child...");
+				error!("Executor was told to stop! killing child...");
 				rc = 10;
-				let _ = child.kill();
+				let _ = command_pid.kill();
 				break;
 			}
 
@@ -387,8 +329,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 		has_finished.store(true, Ordering::Release);
 		flush_task.await;
 
-		// Return exit code.
-		rc as isize
+		Ok(rc)
 	}
 }
 
@@ -398,14 +339,14 @@ mod unit_tests {
 
 	#[test]
 	fn is_compatible() {
-		let compat = HostExecutor::is_compatible();
+		let compat = Executor::is_compatible();
 		assert_eq!(compat, CompatibilityStatus::Compatible);
 	}
 
 	#[test]
 	fn meets_requirements() {
 		let pb = PathBuf::from("/tmp/non-existant");
-		let he = HostExecutor::new(&pb).expect("Should always be able to construct HostExecutor");
+		let he = Executor::new(&pb).expect("Should always be able to construct Executor for host.");
 
 		assert!(
 			he.meets_requirements(&vec![crate::config::types::NeedsRequirement::new(

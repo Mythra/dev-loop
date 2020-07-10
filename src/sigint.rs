@@ -1,5 +1,5 @@
 use color_eyre::{eyre::WrapErr, Result, Section};
-use lazy_static::*;
+use lazy_static::lazy_static;
 
 lazy_static! {
 	pub static ref RUNNING: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
