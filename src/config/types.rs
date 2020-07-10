@@ -45,6 +45,7 @@ pub struct ExecutorConf {
 
 impl ProvideConf {
 	/// Create a new implementation of `ProvideConf`
+	#[cfg(test)]
 	#[must_use]
 	pub fn new(name: String, version: Option<String>) -> Self {
 		Self { name, version }
@@ -274,6 +275,7 @@ pub struct NeedsRequirement {
 
 impl NeedsRequirement {
 	/// Create a new `NeedsRequirements`.
+	#[cfg(test)]
 	#[must_use]
 	pub fn new(name: String, version_matcher: Option<String>) -> Self {
 		Self {
@@ -332,6 +334,7 @@ impl PipelineStep {
 	}
 
 	/// Get the description of this `PipelineStep`
+	#[allow(unused)]
 	#[must_use]
 	pub fn get_description(&self) -> Option<&str> {
 		if let Some(desc) = &self.description {
@@ -564,12 +567,6 @@ pub struct TaskConfFile {
 }
 
 impl TaskConfFile {
-	/// Get the list of tasks from this configuration file.
-	#[must_use]
-	pub fn get_tasks(&self) -> &[TaskConf] {
-		&self.tasks
-	}
-
 	/// Set the task location for all the configuration items
 	/// in this file.
 	pub fn set_task_location(&mut self, loc: &str) {
@@ -593,12 +590,6 @@ pub struct ExecutorConfFile {
 }
 
 impl ExecutorConfFile {
-	/// Get the list of executors that this file added.
-	#[must_use]
-	pub fn get_executors(&self) -> &[ExecutorConf] {
-		&self.executors
-	}
-
 	/// Consume the representation of this `ExecutorConfFile`, and receive the executors.
 	#[must_use]
 	pub fn consume_and_get_executors(self) -> Vec<ExecutorConf> {

@@ -1,6 +1,6 @@
 use crate::{log::HAS_OUTPUT_LOG_MSG, terminal::throttle::Throttle};
 
-use colored::*;
+use colored::Colorize;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use std::collections::{HashMap, HashSet};
 use term_size::dimensions as terminal_dimensions;
@@ -118,7 +118,6 @@ impl TaskIndicator {
 	///   1. The task indicator instance.
 	///   2. A channel sender to send logs (and the task that created them).
 	///   3. A channel sender to send task changes too.
-	#[allow(clippy::type_complexity)]
 	#[must_use]
 	pub fn new(
 		task_count: usize,
@@ -259,7 +258,6 @@ impl TaskIndicator {
 	}
 
 	/// Stop this task indicator, and flush all remaining logs.
-	#[allow(clippy::map_entry)]
 	pub fn stop_and_flush(mut self) {
 		// Ignore task status updates.
 		while let Ok(_) = self.task_changes.try_recv() {}
@@ -333,10 +331,11 @@ impl TaskIndicator {
 	fn erase_task_lines(&mut self) {
 		// For each line we previously rendered.
 		if self.lines_previously_rendered == 0 {
+			HAS_OUTPUT_LOG_MSG.store(false, std::sync::atomic::Ordering::Release);
 			return;
 		}
 		// Don't earse if a log line flew by.
-		if HAS_OUTPUT_LOG_MSG.swap(false, std::sync::atomic::Ordering::Release) {
+		if HAS_OUTPUT_LOG_MSG.swap(false, std::sync::atomic::Ordering::AcqRel) {
 			return;
 		}
 
@@ -355,11 +354,11 @@ impl TaskIndicator {
 	fn print_tasks_colour(&mut self) {
 		if self.tasks_running.is_empty() {
 			eprint!(
-				"[{}/{}] {} Tasks Running...",
+				"[{}/{}] {} Tasks Running...\n",
 				self.tasks_ran, self.task_count, 0
 			);
 
-			self.lines_previously_rendered = 1;
+			self.lines_previously_rendered = 2;
 		} else {
 			let mut task_output_str = String::new();
 			for running_task in &self.tasks_running {
@@ -372,13 +371,13 @@ impl TaskIndicator {
 			}
 
 			eprint!(
-				"{} {} Tasks Running...\n{}",
+				"{} {} Tasks Running...\n{}\n",
 				&format!("[{}/{}]", self.tasks_ran, self.task_count).green(),
 				self.tasks_running.len(),
 				task_output_str,
 			);
 
-			self.lines_previously_rendered = self.tasks_running.len() + 1;
+			self.lines_previously_rendered = self.tasks_running.len() + 2;
 		}
 	}
 }

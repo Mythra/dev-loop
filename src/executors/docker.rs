@@ -1,53 +1,16 @@
-//! Contains the code that represents the Docker Executor, or the executor
-//! that runs your code inside of a Docker Container. Dev-Loop manages the
-//! state of this container, it's network, and the like in it's entirety.
-//!
-//! The docker executor has many arguments to it, that control it's behaviour,
-//! but they're hopefully all sensible.
-//!
-//! The options are configured through `params` (a map of strings passed to the
-//! executor itself). The following attributes you can set are:
-//!
-//! `user`: the user to launch commands as in the container, defaults to root.
-//!
-//! `name_prefix`: the prefix of the container to use. this is required, and
-//!                used to help derive the container name which follows a
-//!                format like: `dl-${name_prefix}${data}`. As such your name
-//!                prefix should end with: `-`.
-//!
-//! `image`: the docker image to use for this container. This is required. This
-//!          should be a full pullable image. For example: `ubuntu:18.04`, or
-//!          `gcr.io/....:latest`
-//!
-//! `extra_mounts`: a list of extra directories to mount for the docker executor.
-//!                 it should be noted the root project directory, and $TMPDIR
-//!                 will always be mounted.
-//!
-//! `hostname`: the hostname to use for the docker container. If you don't
-//!             provide one, it will be derived automatically for you. This is
-//!             almost always preferred since dev-loop will ensure there are no
-//!             possible conflicts.
-//!
-//! `export_env`: a comma seperated list of environment variables to allow
-//!               to be passed into the container.
-//!
-//! `tcp_ports_to_expose`: a comma seperated list of ports to export to the
-//!                        host machine. you won't need to set these if you're
-//!                        using two tasks in a pipeline, as each pipeline
-//!                        gets it's own docker network that allows services
-//!                        to natively communicate.
-//!
-//! `udp_ports_to_expose`: the same as `tcp_ports_to_export` just for udp instead
-//!
-//! If you ever find yourself with a docker container/network that's running
-//! when it's not supposed to be you can use the `clean` command. The clean
-//! command will automatically remove all resources associated with `dev-loop`.
-
 use crate::{
 	config::types::{NeedsRequirement, ProvideConf},
-	dirs::get_tmp_dir,
-	executors::{CompatibilityStatus, Executor},
-	future_helper::timeout_with_log_msg,
+	dirs::{get_tmp_dir, rewrite_tmp_dir},
+	executors::{
+		docker_engine::{
+			delete_container, delete_network, docker_version_check, ensure_docker_container,
+			ensure_network_attached, ensure_network_exists, execute_command_in_container_async,
+			get_command_exit_code, has_command_finished, list_devloop_containers,
+			list_devloop_networks, DockerContainerInfo, SOCKET_PATH,
+		},
+		shared::{create_entrypoint, create_executor_shared_dir, create_log_proxy_files},
+		CompatibilityStatus, Executor as ExecutorTrait,
+	},
 	tasks::execution::preparation::ExecutableTask,
 };
 
@@ -59,12 +22,11 @@ use crossbeam_channel::Sender;
 use isahc::{
 	config::VersionNegotiation, prelude::*, Error as HttpError, HttpClient, HttpClientBuilder,
 };
-use once_cell::sync::Lazy;
 use semver::{Version, VersionReq};
-use serde_json::Value as JsonValue;
 use std::{
 	collections::HashMap,
-	io::{prelude::*, BufReader, Error as IoError},
+	fs::File,
+	io::{prelude::*, BufReader},
 	path::PathBuf,
 	sync::{
 		atomic::{AtomicBool, Ordering},
@@ -72,83 +34,27 @@ use std::{
 	},
 	time::Duration,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
-/// This is the api version we use for talking to the docker socket.
-///
-/// The docker socket allows us to choose a versioned api like this, which is
-/// why we use it as opposed to using a terminal command (not to mention we
-/// don't have to worry about escaping correctly).
-///
-/// `v1.40` is chosen because as of the time of writing this
-/// `v1.40` is the version for Docker Engine 19.03, which at
-/// the time of writing this (July 3rd, 2020) is the lowest supported
-/// version according to docker:
-///
-/// <https://success.docker.com/article/compatibility-matrix>
-///
-/// We can bump this in the future when we know it won't run into anyone.
-const DOCKER_API_VERSION: &str = "/v1.40";
-const DOCKER_STATUS_CODES_ERR_NOTE: &str = "To find out what the status code means you can check the Docker documentation: https://docs.docker.com/engine/api/v1.40/.";
-const _PERMISSIONS_HELPER_EXPERIMENTAL_SUGGESTION: &str = "The permissions helper is still experimental. Please report this so it can be fixed before stabilization.";
-
-cfg_if::cfg_if! {
-  if #[cfg(unix)] {
-		const SOCKET_PATH: &str = "/var/run/docker.sock";
-  } else if #[cfg(win)] {
-		// TODO(xxx): named pipes? url?
-		const SOCKET_PATH: &str = "UNIMPLEMENTED";
-  }
-}
-
-// A global lock for the unix socket since it can't have multiple things communicating
-// at the same time.
-//
-// You can techincally have multiple writers on windows but only up to a particular buff
-// size, and it's just much easier to have just a global lock, and take the extra bit. Really
-// the only time this is truly slow is when we're downloading a docker image.
-static DOCK_SOCK_LOCK: Lazy<async_std::sync::Mutex<()>> =
-	Lazy::new(|| async_std::sync::Mutex::new(()));
-static DOCK_USER_LOCK: Lazy<async_std::sync::Mutex<()>> =
-	Lazy::new(|| async_std::sync::Mutex::new(()));
-
-/// Represents the actual `DockerExecutor`, responsible for maintaining
+/// Represents the actual `Executor` for docker, responsible for maintaining
 /// the lifecycle of a single docker container.
 #[derive(Debug)]
-pub struct DockerExecutor {
+pub struct Executor {
 	/// The HTTPClient used to talking to the docker socket.
 	client: HttpClient,
-	/// The name of the underlying container.
-	container_name: String,
-	/// The environment variables to export.
-	environment_to_export: Vec<String>,
-	/// The list of extra directories to mount.
-	extra_mounts: Vec<String>,
-	/// The image to use for this docker executor.
-	image: String,
-	/// The hostname for this container.
-	hostname: String,
 	/// The root of the project on the host filesystem represented as a string.
 	project_root: String,
 	/// The list of things this provides.
 	provides: HashMap<String, Option<Version>>,
 	/// A random string used for various unique identifiers.
 	random_str: String,
-	/// The group id to run as.
-	run_as_group_id: u32,
-	/// The user id to run as.
-	run_as_user_id: u32,
-	/// The list of ports to export (for tcp).
-	tcp_ports_to_expose: Vec<u32>,
-	/// The temporary directory of the host represented as a string.
+	/// Represents the docker container api.
+	container: DockerContainerInfo,
+	/// The temporary directory.
 	tmp_dir: String,
-	/// The list of udp ports to export.
-	udp_ports_to_expose: Vec<u32>,
-	/// The user to launch the container as.
-	user: String,
 }
 
-impl DockerExecutor {
+impl Executor {
 	/// Create a new Docker Executor.
 	///
 	/// `project_root`: the root of the project directory.
@@ -163,26 +69,12 @@ impl DockerExecutor {
 	///
 	/// The docker executor must have all of it's required arguments passed in
 	/// otherwise it will error on construction.
-	#[allow(unused_assignments, clippy::too_many_lines)]
 	pub fn new(
 		project_root: &PathBuf,
 		executor_args: &HashMap<String, String>,
 		provided_conf: &[ProvideConf],
 		override_sock_path: Option<String>,
 	) -> Result<Self> {
-		// First get the project_root directory, and tmp_dir as strings.
-		//
-		// We need them as strings more than paths.
-
-		let tmp_dir = get_tmp_dir();
-		let tmp_dir_as_string = tmp_dir.to_str();
-		if tmp_dir_as_string.is_none() {
-			return Err(eyre!(
-				"Failed to turn the temporary directory: [{:?}] into a utf8-string.",
-				tmp_dir,
-			)).suggestion("Please change the environment variable TMPDIR to a path that is a UTF-8 only file path.")
-				.note("You can also unset it if you have a `/tmp` directory.");
-		}
 		let pr_as_string = project_root.to_str();
 		if pr_as_string.is_none() {
 			return Err(eyre!(
@@ -198,98 +90,6 @@ impl DockerExecutor {
 		// Next Generate the random name for the container to use that won't clash.
 		let random_str = format!("{}", uuid::Uuid::new_v4());
 
-		// Finally parse out all the executor arguments, including the required ones.
-		let mut container_name = "dl-".to_owned();
-		if let Some(user_specified_prefix) = executor_args.get("name_prefix") {
-			container_name += user_specified_prefix;
-		} else {
-			return Err(eyre!(
-				"Docker Executor requires a `name_prefix` field to know how to name containers!"
-			)).suggestion("Add a `name_prefix` field to `params` that specifys the name prefix for containers")
-				.note("You can find the full list of fields here: https://dev-loop.kungfury.io/docs/schemas/executor-conf");
-		}
-		container_name += &random_str;
-
-		let mut image = String::new();
-		if let Some(image_identifier) = executor_args.get("image") {
-			image = image_identifier.to_owned();
-		} else {
-			return Err(eyre!(
-				"Docker Executor requires an `image` to know which docker image to use."
-			)).suggestion("Add an `image` field to `params` that specifys the docker image to use.")
-				.note("You can find the full list of fields here: https://dev-loop.kungfury.io/docs/schemas/executor-conf");
-		}
-
-		let mut group_id = 0;
-		let mut user_id = 0;
-		if let Some(permission_helper_active) = executor_args.get("experimental_permission_helper")
-		{
-			if &permission_helper_active.to_ascii_lowercase() == "true" {
-				user_id = users::get_effective_uid();
-				group_id = users::get_effective_gid();
-			}
-		}
-
-		let mut env_vars = Vec::new();
-		if let Some(envs_to_export) = executor_args.get("export_env") {
-			env_vars = envs_to_export
-				.split(',')
-				.map(|the_str| {
-					std::env::var(the_str)
-						.map(|val| format!("{}={}", the_str, val))
-						.unwrap_or_else(|_| the_str.to_owned())
-				})
-				.collect::<Vec<String>>();
-		}
-
-		let mut tcp_ports_to_expose = Vec::new();
-		if let Some(ports_to_expose) = executor_args.get("tcp_ports_to_expose") {
-			tcp_ports_to_expose = ports_to_expose
-				.split(',')
-				.filter_map(|item| {
-					let item_pr = item.parse::<u32>();
-					if item_pr.is_err() {
-						warn!(
-							"Not exposing tcp port: [{}] as it is not a valid positive number.",
-							item
-						);
-					}
-
-					item_pr.ok()
-				})
-				.collect::<Vec<u32>>();
-		}
-
-		let mut udp_ports_to_expose = Vec::new();
-		if let Some(ports_to_expose) = executor_args.get("udp_ports_to_expose") {
-			udp_ports_to_expose = ports_to_expose
-				.split(',')
-				.filter_map(|item| {
-					let item_pr = item.parse::<u32>();
-					if item_pr.is_err() {
-						warn!(
-							"Not exposing udp port: [{}] as it is not a valid positive number.",
-							item
-						);
-					}
-
-					item_pr.ok()
-				})
-				.collect::<Vec<u32>>();
-		}
-
-		let user = executor_args
-			.get("user")
-			.map_or_else(|| "root".to_owned(), String::from);
-
-		let hostname = if let Some(hostname_ref) = executor_args.get("hostname") {
-			hostname_ref.to_owned()
-		} else {
-			let mut string = executor_args.get("name_prefix").unwrap().to_owned();
-			string.pop();
-			string
-		};
-
 		let mut provides = HashMap::new();
 		for provided in provided_conf {
 			let version_opt = if provided.get_version().is_empty() {
@@ -301,88 +101,6 @@ impl DockerExecutor {
 			};
 
 			provides.insert(provided.get_name().to_owned(), version_opt);
-		}
-
-		// For mounts remember they:
-		//
-		//   1. Need to be relative to home (signified by starting with: `~` as a
-		//      source location), or be relative to the project root.
-		//   2. Each mount is in the form: `${src}:${dest}`.
-		//   3. Docker will error if a mount doesn't exist, so we need to skip it if
-		//      it's not on the FS.
-		let mut extra_mounts = Vec::new();
-		if let Some(mount_str_ref) = executor_args.get("extra_mounts") {
-			extra_mounts = mount_str_ref
-				.split(',')
-				.filter_map(|item| {
-					let mounts = item.split(':').collect::<Vec<&str>>();
-					if mounts.len() != 2 {
-						warn!(
-							"{:?}",
-							Err::<(), Report>(eyre!(
-								"Mount String for Docker Executor: [{}] is invalid, missing path for container. Will not mount.",
-								item,
-							))
-							.note("Mounts should be in the format: `host_path:path_in_container`")
-							.unwrap_err()
-						);
-						return None;
-					}
-
-					let src = mounts[0];
-					let dest = mounts[1];
-
-					let src =
-						if src.starts_with('~') {
-							let potential_home_dir = crate::dirs::home_dir();
-							if potential_home_dir.is_none() {
-								warn!(
-									"{:?}",
-									Err::<(), Report>(eyre!(
-										"Mount String: [{}] for Docker Executor's source path is relative to the home directory, but the home directory couldn't be found. Will not mount.",
-										item,
-									))
-									.suggestion("You can manually specify the home directory with the `HOME` environment variable.")
-									.unwrap_err()
-								);
-								return None;
-							}
-							let home_dir = potential_home_dir.unwrap();
-							let home_dir = home_dir.to_str();
-							if home_dir.is_none() {
-								warn!(
-									"{:?}",
-									Err::<(), Report>(eyre!(
-										"Home directory is not set to a UTF-8 only string."
-									)).note("If you're not sure how to solve this error, please open an issue.").unwrap_err(),
-								);
-								return None;
-							}
-							let home_dir = home_dir.unwrap();
-
-							src.replace("~", home_dir)
-						} else if src.starts_with('/') {
-							src.to_owned()
-						} else {
-							pr_as_string.to_owned() + "/" + src
-						};
-
-					let src_as_pb = std::path::PathBuf::from(&src);
-					if !src_as_pb.exists() {
-						warn!(
-							"{:?}",
-							Err::<(), Report>(eyre!(
-								"Mount String: [{}] specified a source directory: [{}] that does not exist. Will not mount.",
-								item,
-								src,
-							)).unwrap_err(),
-						);
-						return None;
-					}
-
-					Some(format!("{}:{}", src, dest))
-				})
-				.collect::<Vec<String>>();
 		}
 
 		let client = if cfg!(target_os = "windows") {
@@ -397,234 +115,16 @@ impl DockerExecutor {
 				.build()
 		}?;
 
+		let container = DockerContainerInfo::new(executor_args, pr_as_string, &random_str)?;
+
 		Ok(Self {
 			client,
-			container_name,
-			environment_to_export: env_vars,
-			extra_mounts,
-			image,
-			hostname,
 			project_root: pr_as_string.to_owned(),
 			provides,
 			random_str,
-			run_as_group_id: group_id,
-			run_as_user_id: user_id,
-			tcp_ports_to_expose,
-			tmp_dir: tmp_dir_as_string.unwrap().to_owned(),
-			udp_ports_to_expose,
-			user,
+			container,
+			tmp_dir: get_tmp_dir().to_string_lossy().to_string(),
 		})
-	}
-
-	/// Call the docker engine api using the GET http method.
-	///
-	/// `client`: the http client to use.
-	/// `path`: the path to call (along with Query Args).
-	/// `long_call_msg`: the message to print when docker is taking awhile to respond.
-	/// `timeout`: The optional timeout. Defaults to 30 seconds.
-	/// `is_json`: whether or not to parse the response as json.
-	async fn docker_api_get(
-		client: &HttpClient,
-		path: &str,
-		long_call_msg: String,
-		timeout: Option<Duration>,
-		is_json: bool,
-	) -> Result<JsonValue> {
-		let _guard = DOCK_SOCK_LOCK.lock().await;
-
-		let log_timeout = Duration::from_secs(3);
-		let timeout_frd = timeout.unwrap_or_else(|| Duration::from_secs(30));
-		let url = format!("http://localhost{}{}", DOCKER_API_VERSION, path);
-		debug!("URL for get will be: {}", url);
-		let req = Request::get(url)
-			.header("Accept", "application/json; charset=UTF-8")
-			.header("Content-Type", "application/json; charset=UTF-8")
-			.body(())
-			.wrap_err("Internal-Error: Failed to construct http request.")
-			.suggestion("Please report this as an issue so it can be fixed.")?;
-
-		let mut resp = timeout_with_log_msg(
-			long_call_msg,
-			log_timeout,
-			timeout_frd,
-			client.send_async(req),
-		)
-		.await
-		.context(format!("Requesting URL: {}", path))?
-		.context(format!("Requesting URL: {}", path))?;
-
-		let status = resp.status().as_u16();
-		if status < 200 || status > 299 {
-			return Err(eyre!(
-				"Docker responded to path: [{}] with a status code: [{}] which is not in the 200-300 range.",
-				path,
-				status,
-			))
-			.note(DOCKER_STATUS_CODES_ERR_NOTE);
-		}
-
-		if is_json {
-			Ok(resp
-				.json()
-				.wrap_err("Failure to response Docker response as JSON")
-				.context(format!("Requesting URL: {}", path))?)
-		} else {
-			// Ensure the response body is read in it's entirerty. Otherwise
-			// the body could still be writing, but we think we're done with the
-			// request, and all of a sudden we're writing to a socket while
-			// a response body is all being written and it's all bad.
-			let _ = resp.text();
-			Ok(serde_json::Value::default())
-		}
-	}
-
-	/// Call the docker engine api using the POST http method.
-	///
-	/// `client`: the http client to use.
-	/// `path`: the path to call (along with Query Args).
-	/// `long_call_msg`: the message to print when docker is taking awhile to respond.
-	/// `body`: The body to send to the remote endpoint.
-	/// `timeout`: the optional timeout. Defaults to 30 seconds.
-	/// `is_json`: whether to attempt to read the response body as json.
-	async fn docker_api_post(
-		client: &HttpClient,
-		path: &str,
-		long_call_message: String,
-		body: Option<serde_json::Value>,
-		timeout: Option<Duration>,
-		is_json: bool,
-	) -> Result<JsonValue> {
-		let _guard = DOCK_SOCK_LOCK.lock().await;
-
-		let long_timeout = Duration::from_secs(3);
-		let timeout_frd = timeout.unwrap_or_else(|| Duration::from_secs(30));
-		let url = format!("http://localhost{}{}", DOCKER_API_VERSION, path);
-		debug!("URL for get will be: {}", url);
-		let req_part = Request::post(url)
-			.header("Accept", "application/json; charset=UTF-8")
-			.header("Content-Type", "application/json; charset=UTF-8")
-			.header("Expect", "");
-		let req = if let Some(body_data) = body {
-			req_part
-				.body(
-					serde_json::to_vec(&body_data)
-						.wrap_err("Failure converting HTTP Request Body to JSON")
-						.suggestion("This is an internal error, please report this issue.")?,
-				)
-				.wrap_err("Failed to write body to request")
-				.suggestion("This is an internal error, please report this issue.")?
-		} else {
-			req_part
-				.body(Vec::new())
-				.wrap_err("Failed to write body to request")
-				.suggestion("This is an internal error, please report this issue.")?
-		};
-		let mut resp = timeout_with_log_msg(
-			long_call_message,
-			long_timeout,
-			timeout_frd,
-			client.send_async(req),
-		)
-		.await
-		.context(format!("Requesting URL: {}", path))?
-		.context(format!("Requesting URL: {}", path))?;
-
-		let status = resp.status().as_u16();
-		if status < 200 || status > 299 {
-			return Err(eyre!(
-				"Docker responded to path: [{}] with a status code: [{}] which is not in the 200-300 range.",
-				path,
-				status,
-			))
-			.note(DOCKER_STATUS_CODES_ERR_NOTE);
-		}
-
-		if is_json {
-			Ok(resp
-				.json()
-				.wrap_err("Failure to response Docker response as JSON")
-				.context(format!("HTTP Request Path: {}", path))?)
-		} else {
-			// Ensure the response body is read in it's entirerty. Otherwise
-			// the body could still be writing, but we think we're done with the
-			// request, and all of a sudden we're writing to a socket while
-			// a response body is all being written and it's all bad.
-			let _ = resp.text();
-			Ok(serde_json::Value::default())
-		}
-	}
-
-	/// Call the docker engine api using the POST http method.
-	///
-	/// `client`: the http client to use.
-	/// `path`: the path to call (along with Query Args).
-	/// `long_call_msg`: the message to print when docker is taking awhile to respond.
-	/// `body`: The body to send to the remote endpoint.
-	/// `timeout`: the timeout for this requests, defaults to 30 seconds.
-	/// `is_json`: whether to actually try to read the response body as json.
-	async fn docker_api_delete(
-		client: &HttpClient,
-		path: &str,
-		long_call_msg: String,
-		body: Option<serde_json::Value>,
-		timeout: Option<Duration>,
-		is_json: bool,
-	) -> Result<JsonValue> {
-		let _guard = DOCK_SOCK_LOCK.lock().await;
-
-		let long_dur = Duration::from_secs(3);
-		let timeout_frd = timeout.unwrap_or_else(|| Duration::from_secs(30));
-		let url = format!("http://localhost{}{}", DOCKER_API_VERSION, path);
-		debug!("URL for get will be: {}", url);
-
-		let req_part = Request::delete(url)
-			.header("Accept", "application/json; charset=UTF-8")
-			.header("Content-Type", "application/json; charset=UTF-8")
-			.header("Expect", "");
-		let req = if let Some(body_data) = body {
-			req_part
-				.body(
-					serde_json::to_vec(&body_data)
-						.wrap_err("Failure converting HTTP Request Body to JSON")
-						.suggestion("This is an internal error, please report this issue.")?,
-				)
-				.wrap_err("Failed to write body to request")
-				.suggestion("This is an internal error, please report this issue.")?
-		} else {
-			req_part
-				.body(Vec::new())
-				.wrap_err("Failed to write body to request")
-				.suggestion("This is an internal error, please report this issue.")?
-		};
-		let mut resp =
-			timeout_with_log_msg(long_call_msg, long_dur, timeout_frd, client.send_async(req))
-				.await
-				.context(format!("Requesting URL: {}", path))?
-				.context(format!("Requesting URL: {}", path))?;
-
-		let status = resp.status().as_u16();
-		if status < 200 || status > 299 {
-			return Err(eyre!(
-				"Docker responded to path: [{}] with a status code: [{}] which is not in the 200-300 range.",
-				path,
-				status,
-			))
-			.note(DOCKER_STATUS_CODES_ERR_NOTE);
-		}
-
-		if is_json {
-			Ok(resp
-				.json()
-				.wrap_err("Failure to response Docker response as JSON")
-				.context(format!("HTTP Request Path: {}", path))?)
-		} else {
-			// Ensure the response body is read in it's entirerty. Otherwise
-			// the body could still be writing, but we think we're done with the
-			// request, and all of a sudden we're writing to a socket while
-			// a response body is all being written and it's all bad.
-			let _ = resp.text();
-			Ok(serde_json::Value::default())
-		}
 	}
 
 	/// Attempt to clean up all resources left behind by the docker executor.
@@ -632,7 +132,6 @@ impl DockerExecutor {
 	/// # Errors
 	///
 	/// - when there is an issue talking to the docker api for containers.
-	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	pub async fn clean() -> Result<()> {
 		// Cleanup all things left behind by the docker executor.
 		if Self::is_compatible().await != CompatibilityStatus::Compatible {
@@ -652,137 +151,25 @@ impl DockerExecutor {
 		}
 		.wrap_err("Failed to construct HTTP-Client to talk to Docker")?;
 
-		// First cleanup containers.
-		let containers_json_res = Self::docker_api_get(
-			&client,
-			"/containers/json?all=true",
-			"Taking awhile to query containers from docker. Will wait up to 30 seconds.".to_owned(),
-			None,
-			true,
-		)
-		.await;
-		match containers_json_res {
-			Ok(res) => {
-				if let Some(containers) = res.as_array() {
-					for container in containers {
-						let names_opt = container.get("Names");
-						if names_opt.is_none() {
-							continue;
-						}
-						let names_untyped = names_opt.unwrap();
-						let names_typed_opt = names_untyped.as_array();
-						if names_typed_opt.is_none() {
-							continue;
-						}
-						let names = names_typed_opt.unwrap();
-
-						let mut dl_name = String::new();
-						for name in names {
-							if let Some(name_str) = name.as_str() {
-								if name_str.starts_with("/dl-") {
-									dl_name = name_str.to_owned();
-								}
-							}
-						}
-
-						if dl_name.is_empty() {
-							continue;
-						}
-
-						debug!("Found dev-loop container: [{}]", dl_name);
-						// The container may already be stopped so ignore kill.
-						let _ = Self::docker_api_post(
-							&client,
-							&format!("/containers{}/kill", dl_name),
-							"Docker is not killing the container in a timely manner. Will wait up to 30 seconds.".to_owned(),
-							None,
-							None,
-							false,
-						)
-						.await;
-						// The container may have been launched with --rm.
-						let _ = Self::docker_api_delete(
-							&client,
-							&format!("/containers{}?v=true&force=true&link=true", dl_name,),
-							"Docker is taking awhile to remove the container. Will wait up to 30 seconds.".to_owned(),
-							None,
-							None,
-							false,
-						)
-						.await;
-					}
-				}
-			}
-			Err(container_json_err) => {
-				error!(
-					"{:?}",
-					Err::<(), Report>(container_json_err)
-						.note("Will not clean up docker containers due to this error.")
-						.suggestion("To manually clean up containers use `docker ps -a` to list containers, and `docker kill ${container name that starts with `dl-`}`.")
-						.unwrap_err()
-				);
-			}
+		for container in list_devloop_containers(&client).await.wrap_err("Failed to list containers").note("Will not clean up docker containers due to this error.").suggestion("To manually clean up containers use `docker ps -a` to list containers, and `docker kill ${container name that starts with `dl-`}`")? {
+			debug!("Found dev-loop container: [{}]", container);
+			delete_container(&client, &container).await;
 		}
 
-		// Next checkout networks...
-		let network_json_res = Self::docker_api_get(
-			&client,
-			"/networks",
-			"Taking ahwile to query networks from docker. Will wait up til 30 seconds.".to_owned(),
-			None,
-			true,
-		)
-		.await;
-		match network_json_res {
-			Ok(res) => {
-				if let Some(networks) = res.as_array() {
-					for network in networks {
-						if let Some(name_untyped) = network.get("Name") {
-							if let Some(name_str) = name_untyped.as_str() {
-								if name_str.starts_with("dl-") {
-									debug!("Found dev-loop network: [{}]", name_str);
-
-									if let Err(delete_err) = Self::docker_api_delete(
-										&client,
-										&format!("/networks/{}", name_str),
-										"Docker is taking awhile to delete a docker network. Will wait up to 30 seconds.".to_owned(),
-										None,
-										None,
-										false,
-									)
-									.await
-									{
-										error!(
-											"{:?}",
-											Err::<(), Report>(delete_err)
-												.note(format!("Failed to delete docker network: [{}]", name_str))
-												.suggestion(format!("You can also try deleting the network manually with: `docker network rm {}`", name_str))
-												.unwrap_err()
-										);
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-			Err(network_err) => {
-				error!(
-					"{:?}",
-					Err::<(), Report>(network_err)
-						.note("Will not clean up docker networks due to this error.")
-						.suggestion("To manually clean up networks use `docker network ls` to list networks, and `docker network rm ${network name that starts with `dl-`}`.")
-						.unwrap_err()
-				);
-			}
+		for network in list_devloop_networks(&client)
+			.await
+			.wrap_err("Failed to list networks")
+			.note("Will not delete docker networks due to this error.")?
+		{
+			debug!("Found dev-loop network: [{}]", network);
+			delete_network(&client, &network).await;
 		}
 
 		// Done! \o/
 		Ok(())
 	}
 
-	/// Determines if this `DockerExecutor` is compatible with the system.
-	#[allow(clippy::single_match_else)]
+	/// Determines if this `Executor` is compatible with the system.
 	pub async fn is_compatible() -> CompatibilityStatus {
 		let client = if cfg!(target_os = "windows") {
 			HttpClientBuilder::new()
@@ -805,23 +192,15 @@ impl DockerExecutor {
 		}
 		let client = client.unwrap();
 
-		let version_resp_res = Self::docker_api_get(
-			&client,
-			"/version",
-			"Taking awhile to query version from docker. Will wait up to 30 seconds.".to_owned(),
-			None,
-			true,
-		)
-		.await;
-
-		match version_resp_res {
-			Ok(data) => match data.get("Version") {
-				Some(_) => CompatibilityStatus::Compatible,
-				None => {
+		match docker_version_check(&client).await {
+			Ok(data) => {
+				if data.get("Version").is_some() {
+					CompatibilityStatus::Compatible
+				} else {
 					debug!("Failed to get key: `Version` from docker executor api!");
 					CompatibilityStatus::CouldBeCompatible("install docker".to_owned())
 				}
-			},
+			}
 			Err(http_err) => {
 				debug!(
 					"{:?}",
@@ -834,632 +213,13 @@ impl DockerExecutor {
 		}
 	}
 
-	/// Get the container name used for this Docker Executor.
-	#[must_use]
 	pub fn get_container_name(&self) -> &str {
-		&self.container_name
-	}
-
-	/// Ensure a particular network exists.
-	///
-	/// `client`: the http client.
-	/// `pipeline_id`: the pipeline id for the task.
-	///
-	/// # Errors
-	///
-	/// If we cannot talk to the docker socket, or there is an error creating the network.
-	pub async fn ensure_network_exists(client: &HttpClient, pipeline_id: &str) -> Result<()> {
-		let network_id = format!("dl-{}", pipeline_id);
-		let network_url = format!("/networks/{}", network_id);
-		let res = Self::docker_api_get(
-			client,
-			&network_url,
-			"Taking awhile to query network existance status from docker. Will wait up to 30 seconds.".to_owned(),
-			None,
-			true
-		).await
-		 .wrap_err(format!("Failed to query network information: {}", network_id));
-
-		if res.is_err() {
-			let json_body = serde_json::json!({
-				"Name": network_id,
-			});
-			let _ = Self::docker_api_post(
-				client,
-				"/networks/create",
-				"Docker is not creating the network in a timely manner. Will wait up to 30 seconds.".to_owned(),
-				Some(json_body),
-				None,
-				false
-			)
-				.await
-				.wrap_err(format!("Failed to create docker network: {}", network_id))?;
-		}
-
-		Ok(())
-	}
-
-	/// Download the Image for this docker executor.
-	///
-	/// # Errors
-	///
-	/// Errors when it the docker api cannot be talked too, or the image cannot be downloaded.
-	pub async fn download_image(&self) -> Result<()> {
-		let image_tag_split = self.image.rsplitn(2, ':').collect::<Vec<&str>>();
-		let (image_name, tag_name) = if image_tag_split.len() == 2 {
-			(image_tag_split[1], image_tag_split[0])
-		} else {
-			(image_tag_split[0], "latest")
-		};
-		let url = format!("/images/create?fromImage={}&tag={}", image_name, tag_name);
-
-		let _ = Self::docker_api_post(
-			&self.client,
-			&url,
-			format!(
-				"Downloading the docker_image: [{}:{}]",
-				image_name, tag_name
-			),
-			None,
-			Some(Duration::from_secs(3600)),
-			false,
-		)
-		.await
-		.wrap_err(format!(
-			"Failed to download image: [{}:{}]",
-			image_name, tag_name
-		))?;
-
-		Ok(())
-	}
-
-	/// Determine if the container is created, and then if it's wondering.
-	///
-	/// # Errors
-	///
-	/// Errors when the docker api cannot be talked to.
-	pub async fn is_container_created_and_running(&self) -> Result<(bool, bool)> {
-		let url = format!("/containers/{}/json?size=false", &self.container_name);
-		let mut is_created = false;
-		let mut is_running = false;
-
-		// Ignore errors since a 404 for no container is an Error.
-		if let Ok(value) = Self::docker_api_get(
-			&self.client,
-			&url,
-			"Taking awhile to query container status from docker. Will wait up to 30 seconds."
-				.to_owned(),
-			None,
-			true,
-		)
-		.await
-		{
-			is_created = true;
-			let is_running_status = &value["State"]["Running"];
-			if is_running_status.is_boolean() {
-				is_running = is_running_status.as_bool().unwrap();
-			}
-		}
-
-		Ok((is_created, is_running))
-	}
-
-	/// Creates the container, should only be called when it does not yet exist.
-	///
-	/// # Errors
-	///
-	/// Errors when the docker socket cannot be talked too, or there is a conflict
-	/// creating the container.
-	pub async fn create_container(&self) -> Result<()> {
-		let tmp_dir = get_tmp_dir();
-		let tmp_path = tmp_dir.to_str().unwrap();
-
-		let mut mounts = Vec::new();
-		mounts.push(serde_json::json!({
-			"Source": self.project_root,
-			"Target": "/mnt/dl-root",
-			"Type": "bind",
-			"Consistency": "consistent",
-		}));
-		mounts.push(serde_json::json!({
-			"Source": tmp_path,
-			"Target": "/tmp",
-			"Type": "bind",
-			"Consistency": "consistent",
-		}));
-		for emount in &self.extra_mounts {
-			let mut split = emount.split(':');
-			let source: &str = split.next().unwrap();
-			let target: &str = split.next().unwrap();
-			mounts.push(serde_json::json!({
-				"Source": source,
-				"Target": target,
-				"Type": "bind",
-				"Consistency": "consistent",
-			}));
-		}
-
-		let mut port_mapping = serde_json::map::Map::<String, serde_json::Value>::new();
-		let mut host_config_mapping = serde_json::map::Map::<String, serde_json::Value>::new();
-
-		for tcp_port in &self.tcp_ports_to_expose {
-			port_mapping.insert(format!("{}/tcp", tcp_port), serde_json::json!({}));
-			host_config_mapping.insert(
-				format!("{}/tcp", tcp_port),
-				serde_json::json!([serde_json::json!({ "HostPort": format!("{}", tcp_port) }),]),
-			);
-		}
-		for udp_port in &self.udp_ports_to_expose {
-			port_mapping.insert(format!("{}/udp", udp_port), serde_json::json!({}));
-			host_config_mapping.insert(
-				format!("{}/udp", udp_port),
-				serde_json::json!([serde_json::json!({ "HostPort": format!("{}", udp_port) }),]),
-			);
-		}
-
-		let url = format!("/containers/create?name={}", &self.container_name);
-		let body = serde_json::json!({
-			"Cmd": ["tail", "-f", "/dev/null"],
-			"Entrypoint": "",
-			"Image": self.image,
-			"Hostname": self.hostname,
-			"User": self.user,
-			"HostConfig": {
-				"AutoRemove": true,
-				"Mounts": mounts,
-				"Privileged": true,
-				"PortBindings": host_config_mapping,
-			},
-			"WorkingDir": "/mnt/dl-root",
-			"AttachStdout": true,
-			"AttachStderr": true,
-			"Privileged": true,
-			"Tty": true,
-			"ExposedPorts": port_mapping,
-		});
-		let _ = Self::docker_api_post(
-			&self.client,
-			&url,
-			"Docker is not creating the container in a timely manner. Will wait up to 30 seconds."
-				.to_owned(),
-			Some(body),
-			None,
-			false,
-		)
-		.await
-		.wrap_err("Failed to create the docker container")?;
-
-		Ok(())
-	}
-
-	/// Execute a raw command, returning the "execution id" to check back in on it.
-	///
-	/// `command`: the command to execute.
-	/// `use_user_ids`: if to use the setup user ids (always true during non-setup).
-	///
-	/// # Errors
-	///
-	/// Errors if we fail to create an exec instance with docker.
-	pub async fn raw_execute(&self, command: &[String], use_user_ids: bool) -> Result<String> {
-		let url = format!("/containers/{}/exec", &self.container_name);
-		let body = if use_user_ids && (self.run_as_user_id != 0 || self.run_as_group_id != 0) {
-			serde_json::json!({
-				"AttachStdout": true,
-				"AttachStderr": true,
-				"Tty": false,
-				"User": &format!("{}:{}", self.run_as_user_id, self.run_as_group_id),
-				"Privileged": true,
-				"Cmd": command,
-				"Env": &self.environment_to_export,
-			})
-		} else {
-			serde_json::json!({
-				"AttachStdout": true,
-				"AttachStderr": true,
-				"Tty": false,
-				"User": &self.user,
-				"Privileged": true,
-				"Cmd": command,
-				"Env": &self.environment_to_export,
-			})
-		};
-
-		let resp = Self::docker_api_post(
-			&self.client,
-			&url,
-			"Docker is taking awhile to start running a new command. Will wait up to 30 seconds."
-				.to_owned(),
-			Some(body),
-			None,
-			true,
-		)
-		.await
-		.wrap_err("Failed to send new command to Docker container")?;
-		let potential_id = &resp["Id"];
-		if !potential_id.is_string() {
-			return Err(eyre!(
-				"Failed to find \"Id\" in response from docker: [{:?}]",
-				resp,
-			));
-		}
-		let exec_id = potential_id.as_str().unwrap().to_owned();
-
-		let start_url = format!("/exec/{}/start", &exec_id);
-		let start_body = serde_json::json!({
-			"Detach": true,
-			"Tty": false,
-		});
-
-		let _ = Self::docker_api_post(
-			&self.client,
-			&start_url,
-			"Docker is taking awhile to start running a new command. Will wait up to 30 seconds."
-				.to_owned(),
-			Some(start_body),
-			None,
-			false,
-		)
-		.await
-		.wrap_err("Failed to tell Docker container to start executing command")?;
-
-		Ok(exec_id)
-	}
-
-	/// Execute a raw command, and wait til it's finished. Returns execution id so you can checkup on it.
-	///
-	/// `command`: the command to execute.
-	/// `use_user_ids`: if to use the setup user ids (always true during non-setup).
-	///
-	/// # Errors
-	///
-	/// Errors if we cannot talk to docker to create an exec instance.
-	pub async fn raw_execute_and_wait(
-		&self,
-		command: &[String],
-		use_user_ids: bool,
-	) -> Result<String> {
-		let execution_id = self.raw_execute(command, use_user_ids).await?;
-
-		loop {
-			if Self::has_execution_finished(&self.client, &execution_id).await {
-				break;
-			}
-
-			async_std::task::sleep(Duration::from_micros(10)).await;
-		}
-
-		Ok(execution_id)
-	}
-
-	/// Determine if a particular execution ID has finished executing.
-	///
-	/// `client`: the http client instance to query the docker socket.
-	/// `execution_id`: the execution id to check if it's finished.
-	pub async fn has_execution_finished(client: &HttpClient, execution_id: &str) -> bool {
-		let url = format!("/exec/{}/json", execution_id);
-		let resp_res = Self::docker_api_get(
-			client,
-			&url,
-			"Taking awhile to determine if command has finished running in docker. Will wait up to 30 seconds.".to_owned(),
-			None,
-			true
-		).await;
-		if resp_res.is_err() {
-			return false;
-		}
-		let resp = resp_res.unwrap();
-		let is_running_opt = &resp["Running"];
-		if !is_running_opt.is_boolean() {
-			return false;
-		}
-
-		!is_running_opt.as_bool().unwrap()
-	}
-
-	/// Get the exit code for a particular execution
-	///
-	/// `client`: the HTTP Client to talk to the docker engine api.
-	/// `execution_id`: the execution id.
-	///
-	/// # Errors
-	///
-	/// If we cannot find an `ExitCode` in the docker response, or talk to the docker socket.
-	pub async fn get_execution_status_code(client: &HttpClient, execution_id: &str) -> Result<i64> {
-		let url = format!("/exec/{}/json", execution_id);
-		let resp = Self::docker_api_get(
-			client,
-			&url,
-			"Taking awhile to query exit code of command from docker. Will wait up to 30 seconds."
-				.to_owned(),
-			None,
-			true,
-		)
-		.await
-		.wrap_err("Failed to query exit code from Docker")?;
-		let exit_code_opt = &resp["ExitCode"];
-		if !exit_code_opt.is_i64() {
-			return Err(eyre!(
-				"Failed to find integer ExitCode in response: [{:?}]",
-				resp,
-			))
-			.wrap_err("Failure querying exit code")
-			.suggestion("This is an internal error, please file an issue.");
-		}
-
-		Ok(exit_code_opt.as_i64().unwrap())
-	}
-
-	/// Setup the permission helper for this docker container if it's been configured.
-	///
-	/// # Errors
-	///
-	/// If we cannot talk to the docker socket, or cannot create the user.
-	pub async fn setup_permission_helper(&self) -> Result<()> {
-		let _guard = DOCK_USER_LOCK.lock().await;
-
-		if self.run_as_user_id != 0 || self.run_as_group_id != 0 {
-			let sudo_execution_id = self
-				.raw_execute_and_wait(
-					&[
-						"/usr/bin/env".to_owned(),
-						"bash".to_owned(),
-						"-c".to_owned(),
-						"hash sudo".to_owned(),
-					],
-					false,
-				)
-				.await
-				.wrap_err("Failure Checking for sudo existance inside docker container for permissions helper.")?;
-			let has_sudo =
-				Self::get_execution_status_code(&self.client, &sudo_execution_id).await
-					.wrap_err("Failure Checking for sudo existance inside docker container for permissions helper.")? == 0;
-
-			// This may be a re-used docker container in which case a user with 'dl'
-			// already exists.
-			let user_exist_id = self
-				.raw_execute_and_wait(
-					&[
-						"/usr/bin/env".to_owned(),
-						"bash".to_owned(),
-						"-c".to_owned(),
-						"getent passwd dl".to_owned(),
-					],
-					false,
-				)
-				.await
-				.wrap_err(
-					"Failure checking if user has already been created for permissions helper.",
-				)?;
-			if Self::get_execution_status_code(&self.client, &user_exist_id)
-				.await
-				.wrap_err(
-					"Failure checking if user has already been created for permissions helper.",
-				)? == 0
-			{
-				return Ok(());
-			}
-
-			// Create the user.
-			let creation_execution_id = match (self.user == "root", has_sudo) {
-				(true, _) | (false, false) => {
-					self.raw_execute_and_wait(&[
-						"/usr/bin/env".to_owned(),
-						"bash".to_owned(),
-						"-c".to_owned(),
-						format!("groupadd -g {} -o dl && useradd -u {} -g {} -o -c '' -m dl", self.run_as_group_id, self.run_as_user_id, self.run_as_group_id)
-					], false).await
-					.wrap_err("Failure creating user for permissions helper")?
-				},
-				(false, true) => {
-					self.raw_execute_and_wait(&[
-						"/usr/bin/env".to_owned(),
-						"bash".to_owned(),
-						"-c".to_owned(),
-						format!("sudo -n groupadd -g {} -o dl && sudo -n useradd -u {} -g {} -o -c '' -m dl", self.run_as_group_id, self.run_as_user_id, self.run_as_group_id)
-					], false).await
-					.wrap_err("Failure creating user for permissions helper")?
-				},
-			};
-			if Self::get_execution_status_code(&self.client, &creation_execution_id).await? != 0 {
-				return Err(eyre!(
-					"Failed to get successful ExitCode from docker on user creation for permissions helper"
-				));
-			}
-
-			// Allow the user to sudo, if sudo is installed.
-			if has_sudo {
-				let sudo_user_creation_id = if self.user == "root" {
-					self.raw_execute_and_wait(&[
-						"/usr/bin/env".to_owned(),
-						"bash".to_owned(),
-						"-c".to_owned(),
-						"mkdir -p /etc/sudoers.d && echo \"dl ALL=(root) NOPASSWD:ALL\" > /etc/sudoers.d/dl && chmod 0440 /etc/sudoers.d/dl".to_owned()
-					], false).await
-					.wrap_err("Failure adding user to sudoers for permissions helper")?
-				} else {
-					self.raw_execute_and_wait(&[
-							"/usr/bin/env".to_owned(),
-							"bash".to_owned(),
-							"-c".to_owned(),
-							"sudo -n mkdir -p /etc/sudoers.d && echo \"dl ALL=(root) NOPASSWD:ALL\" | sudo -n tee /etc/sudoers.d/dl && sudo -n chmod 0440 /etc/sudoers.d/dl".to_owned()
-						], false).await
-						.wrap_err("Failure adding user to sudoers for permissions helper")?
-				};
-
-				if Self::get_execution_status_code(&self.client, &sudo_user_creation_id)
-					.await
-					.wrap_err("Failure adding user to sudoers for permissions helper.")?
-					!= 0
-				{
-					return Err(eyre!(
-						"Failed to setup passwordless sudo access for permissions helper!"
-					));
-				}
-			}
-
-			Ok(())
-		} else {
-			Ok(())
-		}
-	}
-
-	/// Ensure the docker container exists.
-	///
-	/// # Errors
-	///
-	/// If we cannot talk to the docker socket, or there is a conflict creating the container.
-	pub async fn ensure_docker_container(&self) -> Result<()> {
-		let image_exists_url = format!("/images/{}/json", &self.image);
-		let image_exists = Self::docker_api_get(
-			&self.client,
-			&image_exists_url,
-			"Taking awhile to query if image is downloaded from docker. Will wait up to 30 seconds.".to_owned(),
-			None,
-			false
-		)
-			.await
-			.wrap_err("Failed to check if image has downloaded.")
-			.is_ok();
-
-		if !image_exists {
-			self.download_image().await?;
-		}
-		let (container_exists, container_running) = self.is_container_created_and_running().await?;
-
-		if !container_exists {
-			self.create_container().await?;
-		}
-
-		if !container_running {
-			let url = format!("/containers/{}/start", self.container_name);
-			let _ = Self::docker_api_post(
-				&self.client,
-				&url,
-				"Docker is taking awhile to start the container. Will wait up to 30 seconds."
-					.to_owned(),
-				None,
-				None,
-				false,
-			)
-			.await
-			.wrap_err("Failed to tell docker to start running the Docker container")?;
-		}
-
-		let execution_id = self
-			.raw_execute_and_wait(
-				&[
-					"/usr/bin/env".to_owned(),
-					"bash".to_owned(),
-					"-c".to_owned(),
-					"hash bash".to_owned(),
-				],
-				false,
-			)
-			.await
-			.wrap_err("Failed to check for existance of bash in Docker container")?;
-
-		let has_bash = Self::get_execution_status_code(&self.client, &execution_id).await?;
-		if has_bash != 0 {
-			return Err(eyre!(
-				"Docker Image: [{}] does not have bash! This is required for dev-loop!",
-				self.image,
-			))
-				.note(format!("To replicate you can run: `docker run --rm -it {} /usr/bin/env bash -c \"hash bash\"`", self.image))
-				.note(format!("The container is also still running with the name: [{}]", self.container_name));
-		}
-
-		let perm_helper_setup = self
-			.setup_permission_helper()
-			.await
-			.suggestion(_PERMISSIONS_HELPER_EXPERIMENTAL_SUGGESTION);
-		if let Err(perm_helper_err) = perm_helper_setup {
-			return Err(perm_helper_err);
-		}
-
-		Ok(())
-	}
-
-	/// Determine if the container is attached to a particular network.
-	///
-	/// `network_id`: the id of the network to attach.
-	pub async fn is_network_attached(&self, network_id: &str) -> bool {
-		let url = format!("/containers/{}/json", self.container_name);
-		let body_res = Self::docker_api_get(
-			&self.client,
-			&url,
-			"Taking awhile to get container status from docker. Will wait up to 30 seconds."
-				.to_owned(),
-			None,
-			true,
-		)
-		.await;
-		if body_res.is_err() {
-			return false;
-		}
-		let body = body_res.unwrap();
-		let id_as_opt = body["Id"].as_str();
-		if id_as_opt.is_none() {
-			return false;
-		}
-		let id = id_as_opt.unwrap();
-
-		let network_url = format!("/networks/dl-{}", network_id);
-		let network_body_res = Self::docker_api_get(
-			&self.client,
-			&network_url,
-			"Taking awhile to get network status from docker. Will wait up to 30 seconds."
-				.to_owned(),
-			None,
-			true,
-		)
-		.await;
-		if network_body_res.is_err() {
-			return false;
-		}
-		let network_body = network_body_res.unwrap();
-		let networks_obj_opt = network_body["Containers"].as_object();
-		if networks_obj_opt.is_none() {
-			return false;
-		}
-		let networks_obj = networks_obj_opt.unwrap();
-
-		networks_obj.contains_key(id)
-	}
-
-	/// Ensure a particular network has been attached to this container.
-	///
-	/// `network_id`: The Network ID to attach too.
-	///
-	/// # Errors
-	///
-	/// If we fail to talk to the docker socket, or connect the container to the network.
-	pub async fn ensure_network_attached(&self, network_id: &str) -> Result<()> {
-		if !self.is_network_attached(network_id).await {
-			let url = format!("/networks/dl-{}/connect", network_id);
-			let body = serde_json::json!({
-				"Container": self.container_name,
-				"EndpointConfig": {
-					"Aliases": [self.hostname],
-				}
-			});
-
-			let _ = Self::docker_api_post(
-				&self.client,
-				&url,
-				"Docker is taking awhile to attach a network to the container. Will wait up to 30 seconds.".to_owned(),
-				Some(body),
-				None,
-				false
-			).await
-			 .wrap_err("Failed to attach network to Docker Container.")?;
-		}
-
-		Ok(())
+		self.container.get_container_name()
 	}
 }
 
 #[async_trait::async_trait]
-impl Executor for DockerExecutor {
+impl ExecutorTrait for Executor {
 	#[must_use]
 	fn meets_requirements(&self, reqs: &[NeedsRequirement]) -> bool {
 		let mut met = true;
@@ -1489,13 +249,6 @@ impl Executor for DockerExecutor {
 		met
 	}
 
-	#[allow(
-		clippy::cast_possible_truncation,
-		clippy::cognitive_complexity,
-		clippy::too_many_lines,
-		clippy::used_underscore_binding,
-		unused_assignments
-	)]
 	#[must_use]
 	async fn execute(
 		&self,
@@ -1504,193 +257,64 @@ impl Executor for DockerExecutor {
 		helper_src_line: &str,
 		task: &ExecutableTask,
 		worker_count: usize,
-	) -> isize {
-		// Execute a particular task inside the docker executor.
-		//
-		// 1. Create the network, and stand it up if not.
-		// 2. Create the container, and stand it up if not.
-		// 3. Connect the container to the appropriate network.
-		// 4. Create a temporary directory for the pipeline id, and the task name.
-		// 5. Write the task file the user specified.
-		// 6. Write an "entrypoint" that sources in the helpers, and calls the script.
-		// 7. Execute the script, and wait for it to finish.
+	) -> Result<i32> {
+		ensure_network_exists(&self.client, task.get_pipeline_id()).await?;
+		ensure_docker_container(
+			&self.client,
+			&self.project_root,
+			&self.tmp_dir,
+			&self.container,
+		)
+		.await?;
+		ensure_network_attached(
+			&self.client,
+			self.container.get_container_name(),
+			self.container.get_hostname(),
+			task.get_pipeline_id(),
+		)
+		.await?;
 
-		let res = Self::ensure_network_exists(&self.client, task.get_pipeline_id()).await;
-		if let Err(network_creation_error) = res {
-			error!("{:?}", network_creation_error);
-			return 10 as isize;
-		}
-		let container_res = self.ensure_docker_container().await;
-		if let Err(container_err) = container_res {
-			error!("{:?}", container_err);
-			return 10 as isize;
-		}
-		let attach_res = self.ensure_network_attached(task.get_pipeline_id()).await;
-		if let Err(attach_err) = attach_res {
-			error!("{:?}", attach_err);
-			return 10 as isize;
-		}
+		let shared_dir = create_executor_shared_dir(task.get_pipeline_id())?;
 
-		let mut tmp_path = get_tmp_dir();
-		let mut tmp_path_in_docker = async_std::path::PathBuf::from("/tmp");
-		tmp_path.push(task.get_pipeline_id().to_owned() + "-dl-host");
-		tmp_path_in_docker.push(task.get_pipeline_id().to_owned() + "-dl-host");
-		let res = async_std::fs::create_dir_all(tmp_path.clone()).await
-			.wrap_err("Failed to create temporary directory for dev-loop state")
-			.note("If you're not able to tell what the issue is (e.g. disk full), please file an issue.");
-		if let Err(dir_err) = res {
-			error!("{:?}", dir_err,);
-			return 10;
-		}
+		let (stdout_host_log_path, stderr_host_log_path) =
+			create_log_proxy_files(&shared_dir, task)?;
+		let stdout_path_in_docker = rewrite_tmp_dir(&self.tmp_dir, &stdout_host_log_path);
+		let stderr_path_in_docker = rewrite_tmp_dir(&self.tmp_dir, &stderr_host_log_path);
 
-		let mut regular_task = tmp_path.clone();
-		let mut regular_task_in_docker = tmp_path_in_docker.clone();
-		regular_task.push(task.get_task_name().to_owned() + ".sh");
-		regular_task_in_docker.push(task.get_task_name().to_owned() + ".sh");
-		debug!("Docker task writing to path: {:?}", regular_task);
-		let write_res =
-			async_std::fs::write(&regular_task, task.get_contents().get_contents()).await
-				.wrap_err("Failed to write script to run for dev-loop")
-				.note("If you're not able to tell what the issue is (e.g. disk full), please file an issue.");
-		if let Err(write_err) = write_res {
-			error!("{:?}", write_err);
-			return 10;
-		}
-		let path_as_str = regular_task_in_docker.to_str().unwrap();
-
-		let epoch = std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.unwrap()
-			.as_secs();
-		let mut stdout_log_path = tmp_path.clone();
-		let mut stdout_log_path_in_docker = tmp_path_in_docker.clone();
-		stdout_log_path.push(format!("{}-{}-out.log", epoch, task.get_task_name()));
-		stdout_log_path_in_docker.push(format!("{}-{}-out.log", epoch, task.get_task_name()));
-		let mut stderr_log_path = tmp_path.clone();
-		let mut stderr_log_path_in_docker = tmp_path_in_docker.clone();
-		stderr_log_path.push(format!("{}-{}-err.log", epoch, task.get_task_name()));
-		stderr_log_path_in_docker.push(format!("{}-{}-err.log", epoch, task.get_task_name()));
-		{
-			if let Err(log_err) = async_std::fs::File::create(&stdout_log_path)
-				.await
-				.wrap_err("Failed to create file for logs to stdout")
-				.note(
-					"If the issue isn't immediately clear (e.g. disk full), please file an issue.",
-				) {
-				error!("{:?}", log_err);
-				return 10;
-			}
-		}
-		{
-			if let Err(log_err) = async_std::fs::File::create(&stderr_log_path)
-				.await
-				.wrap_err("Failed to create file for logs to stdout")
-				.note(
-					"If the issue isn't immediately clear (e.g. disk full), please file an issue.",
-				) {
-				error!("Failed to create stderr log file: {:?}", log_err);
-				return 10;
-			}
-		}
-		if cfg!(target_family = "unix") {
-			{
-				use std::os::unix::fs::PermissionsExt;
-				let log_permissions = std::fs::Permissions::from_mode(0o666);
-
-				if std::fs::set_permissions(&stdout_log_path, log_permissions.clone()).is_err() {
-					warn!("Failed to mark stdout_log as world writable! May cause errors if using a lower-priveleged user!");
-				}
-				if std::fs::set_permissions(&stderr_log_path, log_permissions).is_err() {
-					warn!("Failed to mark stderr_log as world writable! May cause errors if using a lower-priveleged user!");
-				}
-			}
-		}
-
-		let stdout_path_as_str = stdout_log_path_in_docker.to_str().unwrap();
-		let stderr_path_as_str = stderr_log_path_in_docker.to_str().unwrap();
-
-		let entry_point_file = format!(
-			"#!/usr/bin/env bash
-
-{opening_bracket}
-
-cd /mnt/dl-root/
-
-# Source Helpers
-{helper}
-eval \"$(declare -F | sed -e 's/-f /-fx /')\"
-
-{script} {arg_str}
-
-{closing_bracket} >{stdout_log_path} 2>{stderr_log_path}",
-			helper = helper_src_line,
-			script = path_as_str,
-			arg_str = task.get_arg_string(),
-			opening_bracket = "{",
-			closing_bracket = "}",
-			stdout_log_path = stdout_path_as_str,
-			stderr_log_path = stderr_path_as_str,
-		);
-		tmp_path.push(task.get_task_name().to_owned() + "-entrypoint.sh");
-		tmp_path_in_docker.push(task.get_task_name().to_owned() + "-entrypoint.sh");
-		debug!("Task entrypoint is being written too: {:?}", tmp_path);
-		let write_res = std::fs::write(&tmp_path, entry_point_file)
-			.wrap_err("Failed to write entrypoint script for dev-loop.")
-			.note("If the issue isn't immediately clear (e.g. disk full), please file an issue.");
-		if let Err(write_err) = write_res {
-			error!("{:?}", write_err);
-			return 10;
-		}
-
-		if cfg!(target_family = "unix") {
-			use std::os::unix::fs::PermissionsExt;
-			let executable_permissions = std::fs::Permissions::from_mode(0o777);
-
-			if let Err(exec_err) =
-				std::fs::set_permissions(&tmp_path, executable_permissions.clone())
-			{
-				error!(
-					"{:?}",
-					Err::<(), IoError>(exec_err)
-						.wrap_err("Failed to mark script as executable")
-						.note("If the issue is not clear pleas file an issue.")
-						.unwrap_err()
-				);
-			}
-			if let Err(exec_err) = std::fs::set_permissions(&regular_task, executable_permissions) {
-				error!(
-					"{:?}",
-					Err::<(), IoError>(exec_err)
-						.wrap_err("Failed to mark task script as executable")
-						.note("If the issue is not clear pleas file an issue.")
-						.unwrap_err()
-				);
-			}
-		}
-
-		let entrypoint_as_str = tmp_path_in_docker.to_str().unwrap();
-
-		let command_res = self
-			.raw_execute(&[entrypoint_as_str.to_owned()], true)
-			.await
-			.wrap_err("Failed to execute script inside docker container.");
-		if let Err(command_err) = command_res {
-			error!("{:?}", command_err);
-			return 10;
-		}
-		let exec_id = command_res.unwrap();
+		let entrypoint = create_entrypoint(
+			"/mnt/dl-root",
+			&self.tmp_dir,
+			shared_dir,
+			helper_src_line,
+			task,
+			true,
+			Some(stdout_path_in_docker),
+			Some(stderr_path_in_docker),
+		)?;
+		let entrypoint_as_str = entrypoint.to_string_lossy().to_string();
+		let exec_id = execute_command_in_container_async(
+			&self.client,
+			self.container.get_container_name(),
+			&[entrypoint_as_str],
+			self.container.get_environment_to_export(),
+			self.container.get_base_user(),
+			true,
+			self.container.get_cloned_proxy_user_id(),
+			self.container.get_cloned_proxy_group_id(),
+		)
+		.await
+		.wrap_err("Failed to execute script inside docker container.")?;
 
 		let has_finished = Arc::new(AtomicBool::new(false));
-
 		let flush_channel_clone = log_channel.clone();
 		let flush_task_name = task.get_task_name().to_owned();
 		let flush_is_finished_clone = has_finished.clone();
 
 		let flush_task = async_std::task::spawn(async move {
 			let mut line = String::new();
-			let file = std::fs::File::open(stdout_log_path)
+			let file = File::open(stdout_host_log_path)
 				.expect("Failed to open log file even though we created it!");
-			let err_file = std::fs::File::open(stderr_log_path)
+			let err_file = File::open(stderr_host_log_path)
 				.expect("Failed to open stderr log file even though we created it!");
 			let mut reader = BufReader::new(file);
 			let mut stderr_reader = BufReader::new(err_file);
@@ -1718,13 +342,11 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 			}
 		});
 
-		let mut rc = 0;
+		let rc: i32;
 
-		// Loop until completion...
 		loop {
-			// Has the exec finished?
-			if Self::has_execution_finished(&self.client, &exec_id).await {
-				let rc_res = Self::get_execution_status_code(&self.client, &exec_id)
+			if has_command_finished(&self.client, &exec_id).await {
+				let rc_res = get_command_exit_code(&self.client, &exec_id)
 					.await
 					.wrap_err("Failed to check if your task has finished.");
 				if let Err(rc_err) = rc_res {
@@ -1749,7 +371,7 @@ eval \"$(declare -F | sed -e 's/-f /-fx /')\"
 		has_finished.store(true, Ordering::Release);
 		flush_task.await;
 
-		rc as isize
+		Ok(rc)
 	}
 }
 
@@ -1765,7 +387,7 @@ mod unit_tests {
 			let pb = PathBuf::from("/tmp/non-existant");
 
 			assert!(
-				DockerExecutor::new(&pb, &args, &provided_conf, None,).is_err(),
+				Executor::new(&pb, &args, &provided_conf, None,).is_err(),
 				"Docker Executor without a name_prefix should error.",
 			);
 		}
@@ -1777,7 +399,7 @@ mod unit_tests {
 			let pb = PathBuf::from("/tmp/non-existant");
 
 			assert!(
-				DockerExecutor::new(&pb, &args, &provided_conf, None,).is_err(),
+				Executor::new(&pb, &args, &provided_conf, None,).is_err(),
 				"Docker executor without an image should error.",
 			);
 		}
@@ -1790,27 +412,10 @@ mod unit_tests {
 			let pb = PathBuf::from("/tmp/non-existant");
 
 			assert!(
-				DockerExecutor::new(&pb, &args, &provided_conf, None,).is_ok(),
+				Executor::new(&pb, &args, &provided_conf, None,).is_ok(),
 				"Docker executor with an image/name prefix should succeed!",
 			);
 		}
-	}
-
-	#[test]
-	fn get_container_name() {
-		let mut args = HashMap::new();
-		args.insert("name_prefix".to_owned(), "name-prefix-".to_owned());
-		args.insert("image".to_owned(), "localhost:5000/blah:latest".to_owned());
-		let provided_conf = Vec::new();
-		let pb = PathBuf::from("/tmp/non-existant");
-
-		let de = DockerExecutor::new(&pb, &args, &provided_conf, None)
-			.expect("Docker Executor in get_name should be able to be constructed!");
-
-		assert!(
-			de.get_container_name().starts_with("dl-name-prefix-"),
-			"Docker Executor Name needs to start with dl-name-prefix-!",
-		);
 	}
 
 	#[test]
@@ -1825,7 +430,7 @@ mod unit_tests {
 		));
 		let pb = PathBuf::from("/tmp/non-existant");
 
-		let de = DockerExecutor::new(&pb, &args, &provided_conf, None)
+		let de = Executor::new(&pb, &args, &provided_conf, None)
 			.expect("Docker Executor in meets_requirements should be able to be constructed");
 
 		assert!(

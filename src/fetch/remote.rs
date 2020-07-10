@@ -65,11 +65,7 @@ impl HttpFetcher {
 		let mut results = Vec::with_capacity(1);
 		let string = resp.text()?;
 		let bytes = Vec::from(string.as_bytes());
-		results.push(FetchedItem::new(
-			bytes,
-			LocationType::HTTP,
-			location.get_at().to_owned(),
-		));
+		results.push(FetchedItem::new(bytes, location.get_at().to_owned()));
 
 		Ok(results)
 	}

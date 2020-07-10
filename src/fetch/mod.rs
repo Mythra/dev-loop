@@ -18,8 +18,6 @@ use std::{
 pub struct FetchedItem {
 	/// The contents of whatever was fetched.
 	contents: Vec<u8>,
-	/// The fetcher that fetched this item.
-	fetched_by: LocationType,
 	/// An end-user understood idea of where this item came from.
 	source: String,
 }
@@ -31,24 +29,14 @@ impl FetchedItem {
 	/// `fetched_by`: The fetcher that fetched this task.
 	/// `source`: The source of where this came from.
 	#[must_use]
-	pub fn new(contents: Vec<u8>, fetched_by: LocationType, source: String) -> Self {
-		Self {
-			contents,
-			fetched_by,
-			source,
-		}
+	pub fn new(contents: Vec<u8>, source: String) -> Self {
+		Self { contents, source }
 	}
 
 	/// Get the contents of this fetched item.
 	#[must_use]
 	pub fn get_contents(&self) -> &[u8] {
 		&self.contents
-	}
-
-	/// Get who fetched this particular item.
-	#[must_use]
-	pub fn get_fetched_by(&self) -> &LocationType {
-		&self.fetched_by
 	}
 
 	/// Get the source location.
@@ -58,8 +46,8 @@ impl FetchedItem {
 	}
 }
 
-pub mod fs;
-pub mod remote;
+pub(crate) mod fs;
+pub(crate) mod remote;
 
 /// A wrapper around all the fetchers at once, so you just have one type to
 /// deal with.
@@ -90,23 +78,6 @@ impl FetcherRepository {
 			path_fetcher,
 			project_root,
 		})
-	}
-
-	/// Fetch from a particular location.
-	///
-	/// # Errors
-	///
-	/// - Bubbled error from underlying fetchers when there is an error fetching
-	///   the item.
-	pub async fn fetch(&self, location: &LocationConf) -> Result<Vec<FetchedItem>> {
-		match *location.get_type() {
-			LocationType::HTTP => self.http_fetcher.fetch_http(location).await,
-			LocationType::Path => {
-				self.path_fetcher
-					.fetch_from_fs(location, &self.project_root, &self.project_root, None)
-					.await
-			}
-		}
 	}
 
 	/// Fetch from a particular location, while filtering on filename.

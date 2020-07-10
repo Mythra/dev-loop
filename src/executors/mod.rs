@@ -10,7 +10,7 @@ use crate::{
 	},
 	fetch::FetcherRepository,
 	tasks::execution::preparation::ExecutableTask,
-	yaml_err::contextualize_yaml_err,
+	yaml_err::contextualize,
 };
 
 use color_eyre::{
@@ -66,11 +66,13 @@ pub trait Executor {
 		helper_src_line: &str,
 		task: &ExecutableTask,
 		worker_count: usize,
-	) -> isize;
+	) -> Result<i32>;
 }
 
-pub mod docker;
-pub mod host;
+pub(crate) mod docker;
+pub(crate) mod docker_engine;
+pub(crate) mod host;
+pub(crate) mod shared;
 
 /// Describes a "repository" of executors, or more accurately a set of all
 /// the executors that could potentially run, or are running right now.
@@ -129,7 +131,6 @@ impl ExecutorRepository {
 	///
 	/// - When there is an error fetching the executor yaml files from disk.
 	/// - When the executor yaml files contain invalid yaml.
-	#[allow(clippy::cognitive_complexity, clippy::map_entry)]
 	pub async fn new(tlc: &TopLevelConf, fr: &FetcherRepository, rd: &PathBuf) -> Result<Self> {
 		// Keep track of any executors we can construct outside of a custom_executor
 		// for a task. Which will be constructed when the task is run.
@@ -190,7 +191,7 @@ impl ExecutorRepository {
 					let exec_yaml_res =
 						serde_yaml::from_slice::<ExecutorConfFile>(&exec_conf_file.get_contents());
 					if let Err(exec_err) = exec_yaml_res {
-						return contextualize_yaml_err(
+						return contextualize(
 							Err(exec_err),
 							exec_conf_file.get_source(),
 							&String::from_utf8_lossy(exec_conf_file.get_contents()).to_string()
@@ -222,10 +223,7 @@ impl ExecutorRepository {
 
 						let (mut potential_id, executor) = exec_res.unwrap();
 						if &potential_id == "host" {
-							if !executors.contains_key(&potential_id) {
-								debug!("Inserting host executor!");
-								executors.insert(potential_id, executor);
-							}
+							executors.entry(potential_id).or_insert(executor);
 							continue;
 						}
 						while executors.contains_key(&potential_id) {
@@ -249,7 +247,6 @@ impl ExecutorRepository {
 	/// Perform selection of a particular executor for a task.
 	///
 	/// `task`: The actual task configuration.
-	#[allow(clippy::cognitive_complexity)]
 	pub async fn select_executor(
 		&mut self,
 		task: &TaskConf,
@@ -418,7 +415,7 @@ impl ExecutorRepository {
 		// Help the type checker out.
 		let ret_v: Result<(String, Arc<dyn Executor + Send + Sync>)> = match *conf.get_type() {
 			ExecutorType::Host => {
-				let compatibility = host::HostExecutor::is_compatible();
+				let compatibility = host::Executor::is_compatible();
 				match compatibility {
 					CompatibilityStatus::Compatible => {}
 					CompatibilityStatus::CouldBeCompatible(how_to_install) => {
@@ -440,11 +437,11 @@ impl ExecutorRepository {
 						));
 					}
 				}
-				let he = host::HostExecutor::new(rd)?;
+				let he = host::Executor::new(rd)?;
 				Ok(("host".to_owned(), Arc::new(he)))
 			}
 			ExecutorType::Docker => {
-				let compatibility = docker::DockerExecutor::is_compatible().await;
+				let compatibility = docker::Executor::is_compatible().await;
 				match compatibility {
 					CompatibilityStatus::Compatible => {}
 					CompatibilityStatus::CouldBeCompatible(how_to_install) => {
@@ -469,7 +466,7 @@ impl ExecutorRepository {
 
 				let params = conf.get_parameters();
 				let provides = conf.get_provided();
-				let de = docker::DockerExecutor::new(rd, &params, &provides, None)?;
+				let de = docker::Executor::new(rd, &params, &provides, None)?;
 				Ok((de.get_container_name().to_owned(), Arc::new(de)))
 			}
 		};

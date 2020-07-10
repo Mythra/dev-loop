@@ -1,7 +1,7 @@
 //! Handles any logging utilities that we need in our crate for dev-loop.
 
 use color_eyre::{config::HookBuilder, Result};
-use lazy_static::*;
+use lazy_static::lazy_static;
 use std::sync::{
 	atomic::{AtomicBool, Ordering},
 	Arc,
@@ -17,7 +17,7 @@ use tracing_subscriber::{
 };
 
 lazy_static! {
-	pub static ref HAS_OUTPUT_LOG_MSG: Arc<AtomicBool> = Arc::new(AtomicBool::new(true));
+	pub static ref HAS_OUTPUT_LOG_MSG: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 }
 
 struct TracingSubscriber {}

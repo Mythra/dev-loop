@@ -4,7 +4,7 @@
 //!
 //! Those validations happen at different stages within the program.
 
-use crate::yaml_err::contextualize_yaml_err;
+use crate::yaml_err::contextualize;
 use color_eyre::{eyre::WrapErr, Result, Section};
 use std::{
 	fs::{canonicalize, File},
@@ -13,13 +13,12 @@ use std::{
 };
 use tracing::{error, trace};
 
-pub mod types;
+pub(crate) mod types;
 
 /// Get the root of the project repository.
 ///
 /// This discovers the project directory automatically by looking at
 /// `std::env::current_dir()`, and walking the path up.
-#[allow(clippy::cognitive_complexity)]
 #[must_use]
 pub fn get_project_root() -> Option<PathBuf> {
 	// Get the current directory (this is where we start looking...)
@@ -79,7 +78,7 @@ fn find_and_open_project_config() -> Option<(File, PathBuf)> {
 /// # Errors
 ///
 /// - When there is error doing a file read on a found configuration file.
-pub fn get_top_level_config() -> Result<Option<types::TopLevelConf>> {
+pub fn get_top_level() -> Result<Option<types::TopLevelConf>> {
 	let config_fh_opt = find_and_open_project_config();
 	if config_fh_opt.is_none() {
 		error!("Could not find project configuration [.dl/config.yml] looking in current directory, and parent directories.");
@@ -92,7 +91,7 @@ pub fn get_top_level_config() -> Result<Option<types::TopLevelConf>> {
 	config_fh.read_to_string(&mut contents)?;
 
 	Ok(Some(
-		contextualize_yaml_err(
+		contextualize(
 			serde_yaml::from_str::<types::TopLevelConf>(&contents),
 			".dl/config.yml",
 			&contents,

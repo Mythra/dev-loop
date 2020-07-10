@@ -1,26 +1,20 @@
-#![allow(
-	clippy::module_name_repetitions,
-	clippy::result_map_unwrap_or_else,
-	clippy::wildcard_imports
-)]
-
 use crate::config::types::TopLevelConf;
 
 use color_eyre::{eyre::eyre, Report, Section};
 use tracing::warn;
 
-pub mod commands;
-pub mod config;
-pub mod dirs;
-pub mod executors;
-pub mod fetch;
-pub mod future_helper;
-pub mod log;
-pub mod sigint;
-pub mod strsim;
-pub mod tasks;
-pub mod terminal;
-pub mod yaml_err;
+pub(crate) mod commands;
+pub(crate) mod config;
+pub(crate) mod dirs;
+pub(crate) mod executors;
+pub(crate) mod fetch;
+pub(crate) mod future_helper;
+pub(crate) mod log;
+pub(crate) mod sigint;
+pub(crate) mod strsim;
+pub(crate) mod tasks;
+pub(crate) mod terminal;
+pub(crate) mod yaml_err;
 
 /// The entrypoint to the application.
 ///
@@ -51,7 +45,7 @@ fn main() -> Result<(), Report> {
 		action = "list".to_owned();
 	}
 
-	let tlc_res = config::get_top_level_config();
+	let tlc_res = config::get_top_level();
 	let errord_on_tlc = tlc_res.is_err();
 	let tlc = if let Err(tlc_err) = tlc_res {
 		// NOTE(cynthia): if you change this print statement, make sure it looks

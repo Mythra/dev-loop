@@ -5,14 +5,14 @@
 //! command ever needs to do something fancy.
 
 use atty::Stream;
-use colored::*;
+use colored::Colorize;
 use crossbeam_channel::Sender;
-use lazy_static::*;
+use lazy_static::lazy_static;
 use std::sync::Arc;
 use term_size::dimensions as terminal_dimensions;
 
-pub mod task_indicator;
-pub mod throttle;
+pub(crate) mod task_indicator;
+pub(crate) mod throttle;
 
 lazy_static! {
 	pub static ref TERM: Arc<Term> = Arc::new(Term::new());
@@ -142,7 +142,6 @@ impl Term {
 	/// Render a list of items with a particular description.
 	///
 	/// `list_with_descriptions`: A pair of <item, description>.
-	#[allow(unused_assignments)]
 	#[must_use]
 	pub fn render_list_with_description(
 		&self,
@@ -166,7 +165,7 @@ impl Term {
 		let mut result = String::new();
 
 		for (key, description) in list_with_descriptions {
-			let mut actual_key = String::new();
+			let mut actual_key;
 			if key.len() > 15 {
 				actual_key = key.chars().take(12).collect();
 				actual_key += "...";
@@ -213,7 +212,6 @@ impl Term {
 	///   1. The task indicator instance.
 	///   2. A channel sender to send logs (and the task that created them).
 	///   3. A channel sender to send task changes too.
-	#[allow(clippy::type_complexity)]
 	#[must_use]
 	pub fn create_task_indicator(
 		&self,
@@ -223,6 +221,10 @@ impl Term {
 		Sender<(String, String, bool)>,
 		Sender<task_indicator::TaskChange>,
 	) {
-		task_indicator::TaskIndicator::new(task_count, self.is_colour, self.is_colour_err)
+		task_indicator::TaskIndicator::new(
+			task_count,
+			self.should_color_stdout(),
+			self.should_color_stderr(),
+		)
 	}
 }

@@ -107,7 +107,6 @@ fn report_potential_internal_task_names<T>(
 /// - Error creating an executor/choosing an executor for tasks.
 /// - Error writing the helper scripts.
 /// - Error running the task.
-#[allow(clippy::cognitive_complexity)]
 pub async fn handle_exec_command(
 	config: &TopLevelConf,
 	fetcher: &FetcherRepository,
@@ -204,7 +203,7 @@ pub async fn handle_exec_command(
 		Ok(exit_code) => {
 			if exit_code == 0 {
 				// Don't cause an error for cleaning if the task succeeded, the user can always clean manually.
-				let _ = crate::executors::docker::DockerExecutor::clean().await;
+				let _ = crate::executors::docker::Executor::clean().await;
 				Ok(())
 			} else {
 				Err(eyre!(

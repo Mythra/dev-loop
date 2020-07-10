@@ -83,11 +83,7 @@ fn read_path_as_item_blocking(file: &PathBuf, project_root: &PathBuf) -> Result<
 	let mut contents = Vec::new();
 	fh.read_to_end(&mut contents)?;
 
-	Ok(FetchedItem::new(
-		contents,
-		LocationType::Path,
-		source_location,
-	))
+	Ok(FetchedItem::new(contents, source_location))
 }
 
 /// Handles all fetching based on the 'path' directive.
