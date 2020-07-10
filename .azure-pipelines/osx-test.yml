@@ -30,5 +30,5 @@ steps:
     displayName: Build Dev-Loop Release OSX
   - script: |
       cd ./e2e/osx-e2e/
-      DL_COMMAND="../../target/dl-release" ./run-all-tests.sh
+      DL_COMMAND="../../target/dl-osx-release" ./run-all-tests.sh
     displayName: Validate Dev-Loop Release
