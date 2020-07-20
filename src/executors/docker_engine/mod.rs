@@ -60,7 +60,7 @@ async fn docker_api_call<B: Into<Body>>(
 	let log_timeout = Duration::from_secs(3);
 	let timeout_frd = timeout.unwrap_or_else(|| Duration::from_secs(30));
 	let mut resp = timeout_with_log_msg(
-		long_call_msg,
+		long_call_msg.clone(),
 		log_timeout,
 		timeout_frd,
 		client.send_async(req),
@@ -78,16 +78,25 @@ async fn docker_api_call<B: Into<Body>>(
 	}
 
 	if is_json {
-		Ok(resp
-			.json()
-			.wrap_err("Failure to response Docker response as JSON")
-			.context(uri)?)
+		let resp_text =
+			timeout_with_log_msg(long_call_msg, log_timeout, timeout_frd, resp.text_async())
+				.await
+				.wrap_err("Failed to get response from Docker!")?
+				.wrap_err("Failed to read any body from Docker!")?;
+
+		let resp_text_as_json =
+			serde_json::from_str(&resp_text).wrap_err("Failed to parse response body as JSON")?;
+
+		Ok(resp_text_as_json)
 	} else {
 		// Ensure the response body is read in it's entirerty. Otherwise
 		// the body could still be writing, but we think we're done with the
 		// request, and all of a sudden we're writing to a socket while
 		// a response body is all being written and it's all bad.
-		let _ = resp.text();
+		let _ = timeout_with_log_msg(long_call_msg, log_timeout, timeout_frd, resp.text_async())
+			.await
+			.wrap_err("Failed to get response from Docker!")?
+			.wrap_err("Failed to read any body from Docker!")?;
 		Ok(serde_json::Value::default())
 	}
 }
@@ -142,6 +151,7 @@ pub(self) async fn docker_api_post(
 		.header("Accept", "application/json; charset=UTF-8")
 		.header("Content-Type", "application/json; charset=UTF-8")
 		.header("Expect", "");
+
 	let req = if let Some(body_data) = body {
 		req_part
 			.body(
