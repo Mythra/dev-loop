@@ -6,7 +6,7 @@ executors:
       experimental_permission_helper: 'true'
       export_env: 'RUST_BACKTRACE'
       extra_mounts: 'scratch/rust-git-cache/:/home/rust/.cargo/git/,scratch/rust-registry-cache/:/home/rust/.cargo/registry/,scratch/rustup-cache/:/home/dl/.rustup/'
-      image: 'ekidd/rust-musl-builder:1.43.1'
+      image: 'ekidd/rust-musl-builder:1.45.0'
       name_prefix: 'rustc-musl-'
       user: 'rust'
     provides:

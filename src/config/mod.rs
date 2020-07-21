@@ -27,10 +27,8 @@ pub fn get_project_root() -> Option<PathBuf> {
 	// all the way up.
 	let current_dir_res = std::env::current_dir().and_then(canonicalize);
 	if let Err(finding_dir) = current_dir_res {
-		error!(
-			"{:?}",
-			Err::<(), IoError>(finding_dir).wrap_err("Failed to find the current directory.").suggestion("Please file an issue for support, if the underlying cause is not immediately clear.").unwrap_err(),
-		);
+		let formatted_err = Err::<(), IoError>(finding_dir).wrap_err("Failed to find the current directory.").suggestion("Please file an issue for support, if the underlying cause is not immediately clear.").unwrap_err();
+		error!("{:?}", formatted_err,);
 		return None;
 	}
 	let mut current_dir = current_dir_res.unwrap();

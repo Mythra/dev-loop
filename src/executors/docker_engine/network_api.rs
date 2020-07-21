@@ -43,15 +43,15 @@ pub async fn delete_network(client: &HttpClient, network: &str) {
 	.await;
 
 	if err.is_err() {
-		error!(
-			"{:?}",
-			err.wrap_err(format!("Failed to delete docker network: [{}]", network))
-				.suggestion(format!(
-					"You can try deleting the network manually with: `docker network rm {}`",
-					network
-				))
-				.unwrap_err(),
-		);
+		let formatted_err = err
+			.wrap_err(format!("Failed to delete docker network: [{}]", network))
+			.suggestion(format!(
+				"You can try deleting the network manually with: `docker network rm {}`",
+				network
+			))
+			.unwrap_err();
+
+		error!("{:?}", formatted_err,);
 	}
 }
 

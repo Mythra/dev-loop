@@ -202,12 +202,10 @@ impl Executor {
 				}
 			}
 			Err(http_err) => {
-				debug!(
-					"{:?}",
-					Err::<(), Report>(http_err)
-						.note("Failed to reach out to docker socket.")
-						.unwrap_err()
-				);
+				let formatted_err = Err::<(), Report>(http_err)
+					.note("Failed to reach out to docker socket.")
+					.unwrap_err();
+				debug!("{:?}", formatted_err,);
 				CompatibilityStatus::CouldBeCompatible("install docker".to_owned())
 			}
 		}

@@ -28,6 +28,10 @@ use std::{
 use tracing::{debug, warn};
 use twox_hash::{RandomXxHashBuilder64, XxHash64};
 
+type ExecutorMapType = dyn Executor + Send + Sync;
+type AtomicRefExecutorMapType = Arc<ExecutorMapType>;
+type ExecutorHashMapType = HashMap<String, AtomicRefExecutorMapType>;
+
 /// Describes the compatibility status of a particular Executor.
 #[derive(Debug, PartialEq)]
 pub enum CompatibilityStatus {
@@ -83,7 +87,7 @@ pub struct ExecutorRepository {
 	/// Defines the executors that are currently running.
 	active_executors: RwLock<HashSet<String>>,
 	/// Defines the repository of executors that are compatible with this system.
-	repo: RwLock<HashMap<String, Arc<dyn Executor + Sync + Send>>>,
+	repo: RwLock<ExecutorHashMapType>,
 	/// The root project directory.
 	root_dir: PathBuf,
 }
@@ -244,17 +248,12 @@ impl ExecutorRepository {
 		})
 	}
 
-	/// Perform selection of a particular executor for a task.
-	///
-	/// `task`: The actual task configuration.
-	pub async fn select_executor(
-		&mut self,
-		task: &TaskConf,
-	) -> Option<Arc<dyn Executor + Sync + Send>> {
-		// First we need to grab write locks on the repo + active executors.
-		//
-		// If a task specifies a custom executor we need to insert it into the repository.
-		// Then we need to keep track of who's running for reuse selection first.
+	fn map_write_locks(
+		&self,
+	) -> Option<(
+		std::sync::RwLockWriteGuard<'_, ExecutorHashMapType>,
+		std::sync::RwLockWriteGuard<'_, HashSet<String>>,
+	)> {
 		let repo = self.repo.write();
 		if let Err(repo_err) = repo {
 			warn!(
@@ -263,7 +262,8 @@ impl ExecutorRepository {
 			);
 			return None;
 		}
-		let mut repo = repo.unwrap();
+		let repo = repo.unwrap();
+
 		let active_executors = self.active_executors.write();
 		if let Err(ae_err) = active_executors {
 			warn!(
@@ -272,8 +272,47 @@ impl ExecutorRepository {
 			);
 			return None;
 		}
-		let mut active_executors = active_executors.unwrap();
+		let active_executors = active_executors.unwrap();
 
+		Some((repo, active_executors))
+	}
+
+	fn map_read_locks(
+		&self,
+	) -> Option<(
+		std::sync::RwLockReadGuard<'_, ExecutorHashMapType>,
+		std::sync::RwLockReadGuard<'_, HashSet<String>>,
+	)> {
+		let repo = self.repo.read();
+		if let Err(repo_err) = repo {
+			warn!(
+				"Unknown State creating executor, please report as an issue. Maintainer Info: [repo_read_mutex_failure: {:?}]",
+				repo_err,
+			);
+			return None;
+		}
+		let repo = repo.unwrap();
+
+		let active_executors = self.active_executors.read();
+		if let Err(ae_err) = active_executors {
+			warn!(
+				"Unknown State creating executor, please report as an issue. Maintainer Info: [active_executors_read_mutex_failure: {:?}]",
+				ae_err,
+			);
+			return None;
+		}
+		let active_executors = active_executors.unwrap();
+
+		Some((repo, active_executors))
+	}
+
+	/// Perform selection of a particular executor for a task.
+	///
+	/// `task`: The actual task configuration.
+	pub async fn select_executor(
+		&mut self,
+		task: &TaskConf,
+	) -> Option<Arc<dyn Executor + Sync + Send>> {
 		// How dev-loop chooses an executor (precedence):
 		//
 		// 1. If a custom_executor is specified, use that.
@@ -308,6 +347,8 @@ impl ExecutorRepository {
 			}
 
 			let (mut potential_id, executor) = resulting_executor.unwrap();
+			let (mut repo, mut active_executors) = self.map_write_locks()?;
+
 			if potential_id == "host" {
 				if !repo.contains_key(&potential_id) {
 					repo.insert(potential_id.clone(), executor);
@@ -333,6 +374,7 @@ impl ExecutorRepository {
 			return Some(repo.get(&potential_id).unwrap().clone());
 		}
 
+		let (repo, active_executors) = self.map_read_locks()?;
 		if let Some(needs) = task.get_execution_needs() {
 			debug!(
 				"Task: [{}] has specified environment needs. Using those.",

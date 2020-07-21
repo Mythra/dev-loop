@@ -148,14 +148,12 @@ impl Executor {
 
 					// If it is... remove the directory and everything underneath it.
 					if let Err(remove_err) = remove_dir_all(&entry) {
-						warn!(
-							"{:?}",
-							Err::<(), IoError>(remove_err)
-								.wrap_err("Failed to clean temporary directory, trying to continue")
-								.suggestion(
-									format!("Try removing the directory manually with the command: `sudo rm -rf {}`", entry.to_string_lossy())
-								).unwrap_err()
-						);
+						let formatted_err = Err::<(), IoError>(remove_err)
+						.wrap_err("Failed to clean temporary directory, trying to continue")
+						.suggestion(
+							format!("Try removing the directory manually with the command: `sudo rm -rf {}`", entry.to_string_lossy())
+						).unwrap_err();
+						warn!("{:?}", formatted_err,);
 					}
 				}
 			}

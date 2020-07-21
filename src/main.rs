@@ -53,12 +53,10 @@ fn main() -> Result<(), Report> {
 		//
 		// Because list/clean still wants to be run even with no configuration
 		// we print it out here, and exec/run assume it's printed here.
-		warn!(
-			"{:?}\n",
-			tlc_err.wrap_err(
-				"Invalid YAML Configuration, you will need a valid one if you want to run dev-loop"
-			)
+		let formatted_err = tlc_err.wrap_err(
+			"Invalid YAML Configuration, you will need a valid one if you want to run dev-loop",
 		);
+		warn!("{:?}\n", formatted_err,);
 		config::types::TopLevelConf::create_empty_config()
 	} else {
 		tlc_res
