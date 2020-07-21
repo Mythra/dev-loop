@@ -260,7 +260,7 @@ impl TaskIndicator {
 	/// Stop this task indicator, and flush all remaining logs.
 	pub fn stop_and_flush(mut self) {
 		// Ignore task status updates.
-		while let Ok(_) = self.task_changes.try_recv() {}
+		while self.task_changes.try_recv().is_ok() {}
 
 		if !self.use_colour_out && !self.use_colour_err {
 			self.tick_no_colour();
@@ -301,7 +301,7 @@ impl TaskIndicator {
 
 	fn tick_no_colour(&mut self) {
 		// Make sure the buffer doesn't fill up, but we don't care about task/tasks.
-		while let Ok(_) = self.task_changes.try_recv() {}
+		while self.task_changes.try_recv().is_ok() {}
 
 		// Print out any lines that have come in...
 		while let Ok((_, str_data, is_err)) = self.log_channel.try_recv() {

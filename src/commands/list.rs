@@ -216,22 +216,24 @@ fn handle_listing_arg<'a, 'b>(
 					3,
 				);
 
+				let error_str = if did_you_mean_options.is_empty() {
+					" Listing all potential options.".to_owned()
+				} else {
+					let mut string = String::new();
+					for option in did_you_mean_options {
+						string += &format!("\nSuggestion: {}?", option);
+					}
+					string += "\nListing all potential options.";
+
+					string
+				};
+
 				error!(
 					"Argument #{} ({}) couldn't be found in the options provided by the previously selected task ({}).{}",
 					arg_idx + 1,
 					arg,
 					prior_task.get_name(),
-					if did_you_mean_options.is_empty() {
-						" Listing all potential options.".to_owned()
-					} else {
-						let mut string = String::new();
-						for option in did_you_mean_options {
-							string += &format!("\nSuggestion: {}?", option);
-						}
-						string += "\nListing all potential options.";
-
-						string
-					}
+					error_str,
 				);
 				break;
 			}
