@@ -20,6 +20,11 @@ tasks:
     description: host the documentation site at localhost:3000
     type: pipeline
     steps:
+      - name: install deps
+        task: npm-with-port
+        args:
+          - "docs/"
+          - "install"
       - name: run docs site
         task: npm-with-port
         args:

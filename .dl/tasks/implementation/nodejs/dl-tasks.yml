@@ -13,6 +13,7 @@ tasks:
   - name: npm-with-port
     description: shell out to npm in a container that has port 3000 open
     internal: true
+    ctrlc_is_failure: false
     execution_needs:
       - name: nodejs-with-port
     location:

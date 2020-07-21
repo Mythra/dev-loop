@@ -317,8 +317,14 @@ impl ExecutorTrait for Executor {
 
 			// Have we been requested to stop?
 			if should_stop.load(Ordering::Acquire) {
-				error!("Executor was told to stop! killing child...");
-				rc = 10;
+				if task.ctrlc_is_failure() {
+					error!("Executor was told to terminate as failure!");
+					rc = 10;
+				} else {
+					warn!("Executor was told to terminate! Stopping!");
+					rc = 0;
+				}
+
 				let _ = command_pid.kill();
 				break;
 			}

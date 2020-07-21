@@ -34,7 +34,7 @@ use std::{
 	},
 	time::Duration,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Represents the actual `Executor` for docker, responsible for maintaining
 /// the lifecycle of a single docker container.
@@ -216,6 +216,23 @@ impl Executor {
 	pub fn get_container_name(&self) -> &str {
 		self.container.get_container_name()
 	}
+
+	fn read_buf_until_end(
+		reader: &mut BufReader<File>,
+		channel_name: &str,
+		flush_channel_clone: &Sender<(String, String, bool)>,
+		is_stderr: bool,
+	) {
+		let mut line = String::new();
+		while let Ok(read) = reader.read_line(&mut line) {
+			if read == 0 {
+				break;
+			}
+
+			let _ = flush_channel_clone.send((channel_name.to_owned(), line, is_stderr));
+			line = String::new();
+		}
+	}
 }
 
 #[async_trait::async_trait]
@@ -311,7 +328,6 @@ impl ExecutorTrait for Executor {
 		let flush_is_finished_clone = has_finished.clone();
 
 		let flush_task = async_std::task::spawn(async move {
-			let mut line = String::new();
 			let file = File::open(stdout_host_log_path)
 				.expect("Failed to open log file even though we created it!");
 			let err_file = File::open(stderr_host_log_path)
@@ -321,22 +337,13 @@ impl ExecutorTrait for Executor {
 			let channel_name = format!("{}-{}", worker_count, flush_task_name);
 
 			while !flush_is_finished_clone.load(Ordering::Relaxed) {
-				while let Ok(read) = reader.read_line(&mut line) {
-					if read == 0 {
-						break;
-					}
-
-					let _ = flush_channel_clone.send((channel_name.clone(), line, false));
-					line = String::new();
-				}
-				while let Ok(read) = stderr_reader.read_line(&mut line) {
-					if read == 0 {
-						break;
-					}
-
-					let _ = flush_channel_clone.send((channel_name.clone(), line, true));
-					line = String::new();
-				}
+				Self::read_buf_until_end(&mut reader, &channel_name, &flush_channel_clone, false);
+				Self::read_buf_until_end(
+					&mut stderr_reader,
+					&channel_name,
+					&flush_channel_clone,
+					true,
+				);
 
 				async_std::task::sleep(Duration::from_millis(10)).await;
 			}
@@ -360,8 +367,13 @@ impl ExecutorTrait for Executor {
 
 			// Have we been requested to stop?
 			if should_stop.load(Ordering::Acquire) {
-				error!("Docker Executor was told to terminate as failure!");
-				rc = 10;
+				if task.ctrlc_is_failure() {
+					error!("Docker Executor was told to terminate as failure!");
+					rc = 10;
+				} else {
+					warn!("Docker Executor was told to terminate! Stopping!");
+					rc = 0;
+				}
 				break;
 			}
 

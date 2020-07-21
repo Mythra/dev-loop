@@ -55,3 +55,9 @@ Whether or not this task is "internal". If a task is internal it will not be sho
 cannot be run directly (it must be invoked through a `oneof`/`pipeline`/`parallel-pipeline`).
 All internal tasks must be used at least once, or an error will occur because it would be impossible
 for that task to do anything.
+
+- `ctrlc_is_failure`: Bool [OPTIONAL]
+
+Whether or not this task is a task that may need a Ctrl-C, and as such shouldn't
+mark ctrlc as a failure. Defaults to TRUE, since most tasks want to treat a Ctrl-C
+as a failure.
