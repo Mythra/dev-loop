@@ -238,8 +238,8 @@ pub async fn execute_tasks_in_parallel(
 		task_indicator.tick();
 
 		if has_ctrlc_been_hit() {
-			debug!("Detected Ctrl-C being hit! Setting RC to 10, and shutting down.");
-			rc = 10;
+			debug!("Detected Ctrl-C being hit! Shutting down.");
+			should_stop.store(true, Ordering::Release);
 		}
 
 		if rc != 0 {

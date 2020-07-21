@@ -29,6 +29,8 @@ pub struct ExecutableTask {
 	args: Vec<String>,
 	/// The executor that was chosen to be used.
 	chosen_executor: Arc<dyn Executor + Sync + Send>,
+	/// Determines if Ctrl-C is a failure.
+	ctrlc_is_failure: bool,
 	/// The Pipeline ID represents a "namespace"
 	/// that executors should use in order to "seperate" tasks
 	/// to each other. For example in the docker executor the pipeline id
@@ -44,9 +46,12 @@ pub struct ExecutableTask {
 impl Debug for ExecutableTask {
 	fn fmt(&self, formatter: &mut Formatter) -> Result<(), std::fmt::Error> {
 		formatter.write_str(&format!(
-			"ExecutableTask args: {}{}{} pipeline_id: {}{}{}, task_name: {}{}{}",
+			"ExecutableTask args: {}{}{} ctrlc_is_failure: {}{}{} pipeline_id: {}{}{}, task_name: {}{}{}",
 			"{",
 			self.args.join(" "),
+			"}",
+			"{",
+			self.ctrlc_is_failure,
 			"}",
 			"{",
 			self.pipeline_id,
@@ -65,16 +70,23 @@ impl ExecutableTask {
 		args: Vec<String>,
 		executor: Arc<dyn Executor + Sync + Send>,
 		contents: FetchedItem,
+		ctrlc_is_failure: bool,
 		pipeline_id: String,
 		task_name: String,
 	) -> Self {
 		Self {
 			args,
 			chosen_executor: executor,
+			ctrlc_is_failure,
 			pipeline_id,
 			script_contents: contents,
 			task_name,
 		}
+	}
+
+	#[must_use]
+	pub fn ctrlc_is_failure(&self) -> bool {
+		self.ctrlc_is_failure
 	}
 
 	#[must_use]
@@ -204,6 +216,7 @@ async fn command_to_executable_task(
 		args,
 		selected_executor,
 		resulting_item,
+		task.ctrlc_is_failure(),
 		pipeline_id,
 		task.get_name().to_owned(),
 	))

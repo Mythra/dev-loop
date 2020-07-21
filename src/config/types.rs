@@ -466,6 +466,9 @@ pub struct TaskConf {
 	/// If this task is "internal", e.g. should not be shown
 	/// in the "list" command.
 	internal: Option<bool>,
+	/// If this task should keep running until a user hits CtrlC. E.g.
+	/// Ctrl-C should not be marked as a failure.
+	ctrlc_is_failure: Option<bool>,
 	/// Represents the source path this task configuration file is at.
 	/// This is always overriden by dev-loop itself, and will never
 	/// use a user provided value.
@@ -546,6 +549,12 @@ impl TaskConf {
 	#[must_use]
 	pub fn is_internal(&self) -> bool {
 		self.internal.unwrap_or(false)
+	}
+
+	/// Determine if this task should treat Ctrl-C as failure.
+	#[must_use]
+	pub fn ctrlc_is_failure(&self) -> bool {
+		self.ctrlc_is_failure.unwrap_or(true)
 	}
 
 	/// Get the original path of this particular task.
