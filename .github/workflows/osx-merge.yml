@@ -1,0 +1,28 @@
+---
+name: OSX Merged
+
+on:
+  push:
+    branches:
+      - trunk
+
+jobs:
+  build_validate_release:
+    name: Build and Validate and Publish Release
+    runs-on: macOS-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install openssl
+        run: brew install openssl
+      - name: Setup Dev-Loop
+        run: mkdir -p ./scratch/ && (cd ./scratch/ && curl -sSL -o dl https://dev-loop-builds.sfo2.digitaloceanspaces.com/latest/dl-osx && chmod +x dl)
+
+      - name: Build Release
+        run: ./scratch/dl exec ci-only build-osx-dl-release
+      - name: Validate Release
+        run: (cd ./e2e/osx-e2e/ && DL_COMMAND="../../target/dl-osx-release" ./run-all-tests.sh)
+      - name: Publish
+        run: brew install s3cmd && ./target/dl-osx-release exec ci-only upload-to-spaces-osx
+        env:
+          DL_SPACES_BUILD_KEY: ${{ secrets.DL_SPACES_BUILD_KEY }}
+          DL_SPACES_BUILD_SECRET: ${{ secrets.DL_SPACES_BUILD_SECRET }}
