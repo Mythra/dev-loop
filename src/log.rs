@@ -77,6 +77,7 @@ pub fn initialize_crate_logging() -> Result<()> {
 
 	HookBuilder::new()
 		.capture_span_trace_by_default(add_spantrace)
+		.display_env_section(false)
 		.install()?;
 
 	let filter_layer = EnvFilter::from_default_env().add_directive(chosen_level.into());
