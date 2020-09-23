@@ -20,7 +20,9 @@ use color_eyre::{
 };
 use crossbeam_channel::Sender;
 use isahc::{
-	config::{Dialer, VersionNegotiation}, prelude::*, Error as HttpError, HttpClient, HttpClientBuilder,
+	config::{Dialer, VersionNegotiation},
+	prelude::*,
+	Error as HttpError, HttpClient, HttpClientBuilder,
 };
 use semver::{Version, VersionReq};
 use std::{
@@ -111,7 +113,9 @@ impl Executor {
 		} else {
 			HttpClientBuilder::new()
 				.dial(
-					override_sock_path.unwrap_or_else(|| SOCKET_PATH.to_owned()).parse::<Dialer>()?
+					override_sock_path
+						.unwrap_or_else(|| SOCKET_PATH.to_owned())
+						.parse::<Dialer>()?,
 				)
 				.version_negotiation(VersionNegotiation::http11())
 				.build()
