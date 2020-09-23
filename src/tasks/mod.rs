@@ -178,7 +178,7 @@ impl TaskGraph {
 							Err(tye),
 							task_conf_file.get_source(),
 							&String::from_utf8_lossy(task_conf_file.get_contents()).to_string()
-						).note("Full types, and supported values are documented at: https://dev-loop.kungfury.io/docs/schemas/task-conf-file");
+						).note("Full types, and supported values are documented at: https://dev-loop.kungfury.dev/docs/schemas/task-conf-file");
 					}
 					let mut task_yaml = task_yaml_res.unwrap();
 					task_yaml.set_task_location(task_conf_file.get_source());

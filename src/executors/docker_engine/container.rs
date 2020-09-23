@@ -116,7 +116,7 @@ fn container_name_from_arg(args: &HashMap<String, String>, random_str: &str) -> 
 		return Err(eyre!(
 			"Docker Container require a `name_prefix` field to know how to name containers!"
 		)).suggestion("Add a `name_prefix` field to `params` that specifys the name prefix for containers")
-			.note("You can find the full list of fields here: https://dev-loop.kungfury.io/docs/schemas/executor-conf");
+			.note("You can find the full list of fields here: https://dev-loop.kungfury.dev/docs/schemas/executor-conf");
 	}
 	container_name += &random_str;
 
@@ -131,7 +131,7 @@ fn image_from_arg(args: &HashMap<String, String>) -> Result<String> {
 		return Err(eyre!(
 			"Docker Container requires an `image` to know which docker image to use."
 		)).suggestion("Add an `image` field to `params` that specifys the docker image to use.")
-			.note("You can find the full list of fields here: https://dev-loop.kungfury.io/docs/schemas/executor-conf");
+			.note("You can find the full list of fields here: https://dev-loop.kungfury.dev/docs/schemas/executor-conf");
 	}
 
 	Ok(image)

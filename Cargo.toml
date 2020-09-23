@@ -3,6 +3,7 @@ name = "dev-loop"
 version = "0.1.1"
 authors = ["Cynthia <cynthia@coan.dev>"]
 edition = "2018"
+repository = "https://github.com/SecurityInsanity/dev-loop"
 
 [features]
 default = ["static-ssl"]
@@ -13,28 +14,27 @@ opt-level = 3
 
 [dependencies]
 annotate-snippets = { version = "^0.9", features = ["color"] }
-async-std = { version = "^1.5", features = ["attributes"] }
+async-std = { version = "^1.6", features = ["attributes"] }
 async-trait = "^0.1"
 atty = "^0.2"
-colored = "^1.9"
-color-eyre = "^0.5.0"
+colored = "^2.0"
+color-eyre = "^0.5.5"
 crossbeam-channel = "^0.4"
 crossbeam-deque = "^0.7"
 cfg-if = "^0.1"
 ctrlc = "^3.1"
-# TODO(xxx): go back to upstream once: https://github.com/sagebind/isahc/issues/150
-isahc = { git = "https://github.com/SecurityInsanity/isahc", features = ["http2", "json"] }
+isahc = { version = "^0.9.9", features = ["http2", "json"] }
 lazy_static = "^1.4"
 libc = "^0.2"
 log = "^0.4"
-num_cpus = "^1.12"
-once_cell = "^1.3"
+num_cpus = "^1.13"
+once_cell = "^1.4"
 pin-project-lite = "^0.1.7"
-semver = "^0.9"
+semver = "^0.10"
 serde = { version = "^1.0", features = ["derive"] }
 serde_json = "^1.0"
 serde_yaml = "^0.8"
-smol = "0.1.8"
+smol = "^1.2.1"
 term_size = "1.0.0-beta1"
 tracing = "^0.1"
 tracing-error = "^0.1"

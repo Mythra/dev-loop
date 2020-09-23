@@ -20,7 +20,9 @@ use color_eyre::{
 };
 use crossbeam_channel::Sender;
 use isahc::{
-	config::VersionNegotiation, prelude::*, Error as HttpError, HttpClient, HttpClientBuilder,
+	config::{Dialer, VersionNegotiation},
+	prelude::*,
+	Error as HttpError, HttpClient, HttpClientBuilder,
 };
 use semver::{Version, VersionReq};
 use std::{
@@ -110,7 +112,11 @@ impl Executor {
 				.build()
 		} else {
 			HttpClientBuilder::new()
-				.unix_socket(override_sock_path.unwrap_or_else(|| SOCKET_PATH.to_owned()))
+				.dial(
+					override_sock_path
+						.unwrap_or_else(|| SOCKET_PATH.to_owned())
+						.parse::<Dialer>()?,
+				)
 				.version_negotiation(VersionNegotiation::http11())
 				.build()
 		}?;
@@ -145,7 +151,7 @@ impl Executor {
 				.build()
 		} else {
 			HttpClientBuilder::new()
-				.unix_socket(SOCKET_PATH.to_owned())
+				.dial(SOCKET_PATH.parse::<Dialer>()?)
 				.version_negotiation(VersionNegotiation::http11())
 				.build()
 		}
@@ -176,8 +182,19 @@ impl Executor {
 				.version_negotiation(VersionNegotiation::http11())
 				.build()
 		} else {
+			let as_dialer = SOCKET_PATH.parse::<Dialer>();
+			if as_dialer.is_err() {
+				return CompatibilityStatus::CannotBeCompatible(Some(format!(
+					"{:?}",
+					Err::<(), isahc::config::DialerParseError>(as_dialer.unwrap_err())
+						.wrap_err("Internal Exception: Failed to construct HTTP Client")
+						.suggestion("This is an internal error, please file an issue.")
+						.unwrap_err(),
+				)));
+			}
+
 			HttpClientBuilder::new()
-				.unix_socket(SOCKET_PATH.to_owned())
+				.dial(as_dialer.unwrap())
 				.version_negotiation(VersionNegotiation::http11())
 				.build()
 		};
