@@ -60,7 +60,7 @@ pub async fn handle_run_command(
 	if presets_opt.is_none() {
 		return Err(eyre!(
 			"You have configured no presets, so we cannot run a preset."
-		)).note("You can define presets in `.dl/config.yml`, the format is specified here: https://dev-loop.kungfury.io/docs/schemas/preset-conf");
+		)).note("You can define presets in `.dl/config.yml`, the format is specified here: https://dev-loop.kungfury.dev/docs/schemas/preset-conf");
 	}
 	let presets = presets_opt.unwrap();
 	let mut tags = Vec::new();

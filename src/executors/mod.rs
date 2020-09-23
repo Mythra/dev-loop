@@ -200,7 +200,7 @@ impl ExecutorRepository {
 							exec_conf_file.get_source(),
 							&String::from_utf8_lossy(exec_conf_file.get_contents()).to_string()
 						).wrap_err("Failed to parse executor file as yaml")
-						 .note("Full types, and supported values are documented at: https://dev-loop.kungfury.io/docs/schemas/executor-conf-file");
+						 .note("Full types, and supported values are documented at: https://dev-loop.kungfury.dev/docs/schemas/executor-conf-file");
 					}
 					let exec_yaml = exec_yaml_res.unwrap();
 

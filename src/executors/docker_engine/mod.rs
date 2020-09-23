@@ -31,7 +31,7 @@ const DOCKER_STATUS_CODES_ERR_NOTE: &str = "To find out what the status code mea
 
 cfg_if::cfg_if! {
   if #[cfg(unix)] {
-		pub const SOCKET_PATH: &str = "/var/run/docker.sock";
+		pub const SOCKET_PATH: &str = "unix:/var/run/docker.sock";
   } else if #[cfg(win)] {
 		// TODO(xxx): named pipes? url?
 		pub const SOCKET_PATH: &str = "UNIMPLEMENTED";
