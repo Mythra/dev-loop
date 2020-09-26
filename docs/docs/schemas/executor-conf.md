@@ -51,7 +51,9 @@ The Host Executor has no possible arguments. It ignores all possible options.
 | tcp_ports_to_expose            | Comma Seperated String [OPTIONAL]          | a comma seperated list of ports to export to the host machine. you won't need to set these if you're using two tasks in a pipeline, as each pipeline gets it's own docker network that allows services to natively communicate. |
 | udp_ports_to_expose            | Comma Seperated String [OPTIONAL]          | the same as `tcp_ports_to_export` just for udp instead.                                                                                                                                                                         |
 | experimental_permission_helper | String'd Boolean [OPTIONAL] [EXPERIMENTAL] | [EXPERIMENTAL] will break in a later update, a flag that tells dev-loop to fix permissions on linux hosts for it's mounted volumes.                                                                                             |
-
+| run_until_ctrlc                | String'd Boolean [OPTIONAL]                | Used to indicate that a task will run until Ctrl-C is pressed. Effectively will not cause a failure when Ctrl-C is pressed.                                                                                                     |
+| docker_auth_username_env       | String                                     | The environment variable that contains the username for authentication.                                                                                                                                                         |
+| docker_auth_password_env       | String                                     | The environment variable that contains the password for authentication.                                                                                                                                                         |
 - `provides`: List[<a href="/docs/schemas/provide-conf" class="internal-link">ProvideConf</a>] [OPTIONAL]
 
 A list of things this particular executor provides. See ProvideConf for more information.
