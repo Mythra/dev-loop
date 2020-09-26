@@ -21,7 +21,7 @@ use color_eyre::{
 use crossbeam_channel::Sender;
 use isahc::{
 	config::{Dialer, VersionNegotiation},
-	http::{HeaderMap, header::HeaderName},
+	http::{header::HeaderName, HeaderMap},
 	prelude::*,
 	Error as HttpError, HttpClient, HttpClientBuilder,
 };
@@ -121,13 +121,20 @@ impl Executor {
 								username_ref,
 								password_ref,
 								opening_bracket = "{",
-							)).parse()?,
+							))
+							.parse()?,
 						);
 					} else {
-						warn!("No password variable specified in: [{}], not authenticating", pass_env_var);
+						warn!(
+							"No password variable specified in: [{}], not authenticating",
+							pass_env_var
+						);
 					}
 				} else {
-					warn!("No username variable specified in: [{}], not authenticating", user_env_var);
+					warn!(
+						"No username variable specified in: [{}], not authenticating",
+						user_env_var
+					);
 				}
 			} else {
 				warn!("`docker_auth_username_env` specified with no `docker_auth_password_env`, not authenticating.");
