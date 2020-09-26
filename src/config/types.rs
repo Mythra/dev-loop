@@ -16,6 +16,31 @@ pub struct ProvideConf {
 	version: Option<String>,
 }
 
+impl ProvideConf {
+	/// Create a new implementation of `ProvideConf`
+	#[cfg(test)]
+	#[must_use]
+	pub fn new(name: String, version: Option<String>) -> Self {
+		Self { name, version }
+	}
+
+	/// Get the name of the thing provided.
+	#[must_use]
+	pub fn get_name(&self) -> &str {
+		&self.name
+	}
+
+	/// Get the version of the thing provided.
+	#[must_use]
+	pub fn get_version(&self) -> &str {
+		if self.version.is_none() {
+			""
+		} else {
+			self.version.as_ref().unwrap()
+		}
+	}
+}
+
 /// All of the possible types of executors that dev-loop supports executing.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub enum ExecutorType {
@@ -41,31 +66,6 @@ pub struct ExecutorConf {
 	params: Option<HashMap<String, String>>,
 	/// The list of provided installed utilities.
 	provides: Option<Vec<ProvideConf>>,
-}
-
-impl ProvideConf {
-	/// Create a new implementation of `ProvideConf`
-	#[cfg(test)]
-	#[must_use]
-	pub fn new(name: String, version: Option<String>) -> Self {
-		Self { name, version }
-	}
-
-	/// Get the name of the thing provided.
-	#[must_use]
-	pub fn get_name(&self) -> &str {
-		&self.name
-	}
-
-	/// Get the version of the thing provided.
-	#[must_use]
-	pub fn get_version(&self) -> &str {
-		if self.version.is_none() {
-			""
-		} else {
-			self.version.as_ref().unwrap()
-		}
-	}
 }
 
 impl ExecutorConf {

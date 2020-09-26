@@ -21,6 +21,7 @@ use color_eyre::{
 use crossbeam_channel::Sender;
 use isahc::{
 	config::{Dialer, VersionNegotiation},
+	http::{HeaderMap, header::HeaderName},
 	prelude::*,
 	Error as HttpError, HttpClient, HttpClientBuilder,
 };
@@ -105,9 +106,38 @@ impl Executor {
 			provides.insert(provided.get_name().to_owned(), version_opt);
 		}
 
+		let mut default_headers = HeaderMap::new();
+		if executor_args.contains_key("docker_auth_username_env") {
+			if executor_args.contains_key("docker_auth_password_env") {
+				let user_env_var = executor_args.get("docker_auth_username_env").unwrap();
+				let pass_env_var = executor_args.get("docker_auth_password_env").unwrap();
+
+				if let Ok(username_ref) = std::env::var(user_env_var) {
+					if let Ok(password_ref) = std::env::var(pass_env_var) {
+						default_headers.insert(
+							"X-Registry-Auth".parse::<HeaderName>()?,
+							base64::encode(format!(
+								"{opening_bracket}\"username\": \"{}\", \"password\": \"{}\"}}",
+								username_ref,
+								password_ref,
+								opening_bracket = "{",
+							)).parse()?,
+						);
+					} else {
+						warn!("No password variable specified in: [{}], not authenticating", pass_env_var);
+					}
+				} else {
+					warn!("No username variable specified in: [{}], not authenticating", user_env_var);
+				}
+			} else {
+				warn!("`docker_auth_username_env` specified with no `docker_auth_password_env`, not authenticating.");
+			}
+		}
+
 		let client = if cfg!(target_os = "windows") {
 			// TODO(xxx): set windows named pipe/url
 			HttpClientBuilder::new()
+				.default_headers(&default_headers)
 				.version_negotiation(VersionNegotiation::http11())
 				.build()
 		} else {
@@ -117,6 +147,7 @@ impl Executor {
 						.unwrap_or_else(|| SOCKET_PATH.to_owned())
 						.parse::<Dialer>()?,
 				)
+				.default_headers(&default_headers)
 				.version_negotiation(VersionNegotiation::http11())
 				.build()
 		}?;

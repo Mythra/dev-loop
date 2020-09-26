@@ -17,6 +17,7 @@ annotate-snippets = { version = "^0.9", features = ["color"] }
 async-std = { version = "^1.6", features = ["attributes"] }
 async-trait = "^0.1"
 atty = "^0.2"
+base64 = "^0.12"
 colored = "^2.0"
 color-eyre = "^0.5.5"
 crossbeam-channel = "^0.4"
