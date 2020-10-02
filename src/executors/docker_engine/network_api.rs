@@ -2,7 +2,13 @@ use super::{docker_api_delete, docker_api_get, docker_api_post};
 
 use color_eyre::{eyre::WrapErr, Result, Section};
 use isahc::HttpClient;
+use once_cell::sync::Lazy;
 use tracing::error;
+
+static NETWORK_CREATION_LOCK: Lazy<async_std::sync::Mutex<()>> =
+	Lazy::new(|| async_std::sync::Mutex::new(()));
+static NETWORK_ATTACH_LOCK: Lazy<async_std::sync::Mutex<()>> =
+	Lazy::new(|| async_std::sync::Mutex::new(()));
 
 pub async fn list_devloop_networks(client: &HttpClient) -> Result<Vec<String>> {
 	let json_networks = docker_api_get(
@@ -61,6 +67,8 @@ pub async fn delete_network(client: &HttpClient, network: &str) {
 ///
 /// If we cannot talk to the docker socket, or there is an error creating the network.
 pub async fn ensure_network_exists(client: &HttpClient, pipeline_id: &str) -> Result<()> {
+	let _guard = NETWORK_CREATION_LOCK.lock().await;
+
 	let network_id = format!("dl-{}", pipeline_id);
 	let network_url = format!("/networks/{}", network_id);
 	let res = docker_api_get(
@@ -101,11 +109,7 @@ pub async fn ensure_network_exists(client: &HttpClient, pipeline_id: &str) -> Re
 /// Determine if the container is attached to a particular network.
 ///
 /// If there were any errors we'll just return false.
-pub async fn is_network_attached(
-	client: &HttpClient,
-	container_name: &str,
-	pipeline_id: &str,
-) -> bool {
+async fn is_network_attached(client: &HttpClient, container_name: &str, pipeline_id: &str) -> bool {
 	let url = format!("/containers/{}/json", container_name);
 	let body_res = docker_api_get(
 		&client,
@@ -158,6 +162,8 @@ pub async fn ensure_network_attached(
 	hostname: &str,
 	pipeline_id: &str,
 ) -> Result<()> {
+	let _guard = NETWORK_ATTACH_LOCK.lock().await;
+
 	if !is_network_attached(client, container_name, pipeline_id).await {
 		let url = format!("/networks/dl-{}/connect", pipeline_id);
 		let body = serde_json::json!({
