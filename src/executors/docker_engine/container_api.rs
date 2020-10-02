@@ -9,6 +9,10 @@ use color_eyre::{
 	Result, Section,
 };
 use isahc::HttpClient;
+use once_cell::sync::Lazy;
+
+static CONTAINER_CREATION_LOCK: Lazy<async_std::sync::Mutex<()>> =
+	Lazy::new(|| async_std::sync::Mutex::new(()));
 
 /// List all the devloop containers.
 pub async fn list_devloop_containers(client: &HttpClient) -> Result<Vec<String>> {
@@ -83,7 +87,7 @@ pub async fn delete_container(client: &HttpClient, container_name: &str) {
 /// # Errors
 ///
 /// Errors when the docker api cannot be talked to.
-pub async fn is_container_created_and_running(
+async fn is_container_created_and_running(
 	client: &HttpClient,
 	container_name: &str,
 ) -> Result<(bool, bool)> {
@@ -118,7 +122,7 @@ pub async fn is_container_created_and_running(
 ///
 /// Errors when the docker socket cannot be talked too, or there is a conflict
 /// creating the container.
-pub async fn create_container(
+async fn create_container(
 	client: &HttpClient,
 	project_root: &str,
 	tmp_dir: &str,
@@ -216,6 +220,8 @@ pub async fn ensure_docker_container(
 	tmp_dir: &str,
 	container: &DockerContainerInfo,
 ) -> Result<()> {
+	let _guard = CONTAINER_CREATION_LOCK.lock().await;
+
 	let image_exists_url = format!("/images/{}/json", container.get_image());
 	let image_exists = docker_api_get(
 		client,
