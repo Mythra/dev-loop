@@ -366,9 +366,9 @@ dependencies = [
 
 [[package]]
 name = "color-eyre"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "beae3fcb8e4494aaf14ef64a78509215edd4ac824114a679e4c799cd7c07ad2a"
+checksum = "f2a5123db5af8349c41c43ed0e5dca1cd56c911ea0c4ce6e6ff30f159fa5d27e"
 dependencies = [
  "backtrace",
  "color-spantrace",
@@ -587,9 +587,9 @@ checksum = "f7531096570974c3a9dcf9e4b8e1cede1ec26cf5046219fb3b9d897503b9be59"
 
 [[package]]
 name = "eyre"
-version = "0.6.0"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0f9683839e579a53258d377fcc0073ca0bf2042ac5e6c60a598069e64403a6d"
+checksum = "534ce924bff9118be8b28b24ede6bf7e96a00b53e4ded25050aa7b526e051e1a"
 dependencies = [
  "indenter",
  "once_cell",
