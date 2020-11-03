@@ -418,16 +418,6 @@ checksum = "c478836e029dcef17fb47c89023448c64f781a046e0300e257ad8225ae59afab"
 
 [[package]]
 name = "crossbeam-channel"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b153fe7cbef478c567df0f972e02e6d736db11affe43dfc9c56a9374d1adfb87"
-dependencies = [
- "crossbeam-utils 0.7.2",
- "maybe-uninit",
-]
-
-[[package]]
-name = "crossbeam-channel"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dca26ee1f8d361640700bde38b2c37d8c22b3ce2d360e1fc1c74ea4b0aa7d775"
@@ -497,9 +487,9 @@ dependencies = [
 
 [[package]]
 name = "curl"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78baca05127a115136a9898e266988fc49ca7ea2c839f60fc6e1fc9df1599168"
+checksum = "e268162af1a5fe89917ae25ba3b0a77c8da752bdc58e7dbb4f15b91fbd33756e"
 dependencies = [
  "curl-sys",
  "libc",
@@ -512,9 +502,9 @@ dependencies = [
 
 [[package]]
 name = "curl-sys"
-version = "0.4.36+curl-7.71.1"
+version = "0.4.38+curl-7.73.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68cad94adeb0c16558429c3c34a607acc9ea58e09a7b66310aabc9788fc5d721"
+checksum = "498ecfb4f59997fd40023d62a9f1e506e768b2baeb59a1d311eb9751cdcd7e3f"
 dependencies = [
  "cc",
  "libc",
@@ -538,7 +528,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "color-eyre",
  "colored",
- "crossbeam-channel 0.5.0",
+ "crossbeam-channel",
  "crossbeam-deque",
  "ctrlc",
  "isahc",
@@ -749,13 +739,13 @@ checksum = "e0bd112d44d9d870a6819eb505d04dd92b5e4d94bb8c304924a0872ae7016fb5"
 
 [[package]]
 name = "isahc"
-version = "0.9.9"
+version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ecedb6ed2615f66b14d9790bad67f8d45dfaffe01464681fb868fe90ca20c41"
+checksum = "0cf84ee8215bcaa999a24870485ef49d051cd858985a80d123e56be2d921d811"
 dependencies = [
  "bytes",
- "crossbeam-channel 0.4.4",
- "crossbeam-utils 0.7.2",
+ "crossbeam-channel",
+ "crossbeam-utils 0.8.0",
  "curl",
  "curl-sys",
  "encoding_rs",
@@ -763,9 +753,9 @@ dependencies = [
  "futures-io",
  "futures-util",
  "http",
- "lazy_static",
  "log",
  "mime",
+ "once_cell",
  "serde",
  "serde_json",
  "slab",
