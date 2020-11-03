@@ -535,7 +535,7 @@ dependencies = [
  "async-trait",
  "atty",
  "base64",
- "cfg-if 0.1.10",
+ "cfg-if 1.0.0",
  "color-eyre",
  "colored",
  "crossbeam-channel 0.5.0",

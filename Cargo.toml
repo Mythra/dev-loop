@@ -22,7 +22,7 @@ colored = "^2.0"
 color-eyre = "^0.5.5"
 crossbeam-channel = "^0.5"
 crossbeam-deque = "^0.7"
-cfg-if = "^0.1"
+cfg-if = "^1.0"
 ctrlc = "^3.1"
 isahc = { version = "^0.9.9", features = ["http2", "json"] }
 lazy_static = "^1.4"
