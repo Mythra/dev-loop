@@ -21,7 +21,7 @@ base64 = "^0.13"
 colored = "^2.0"
 color-eyre = "^0.5.6"
 crossbeam-channel = "^0.5"
-crossbeam-deque = "^0.7"
+crossbeam-deque = "^0.8"
 cfg-if = "^1.0"
 ctrlc = "^3.1"
 isahc = { version = "^0.9.11", features = ["http2", "json"] }
