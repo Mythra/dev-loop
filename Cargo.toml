@@ -24,7 +24,7 @@ crossbeam-channel = "^0.5"
 crossbeam-deque = "^0.8"
 cfg-if = "^1.0"
 ctrlc = "^3.1"
-isahc = { version = "^0.9.12", features = ["http2", "json"] }
+isahc = { version = "^0.9.13", features = ["http2", "json"] }
 lazy_static = "^1.4"
 libc = "^0.2"
 log = "^0.4"
