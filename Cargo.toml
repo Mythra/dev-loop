@@ -14,7 +14,7 @@ opt-level = 3
 
 [dependencies]
 annotate-snippets = { version = "^0.9", features = ["color"] }
-async-std = { version = "^1.8", features = ["attributes"] }
+async-std = { version = "^1.9", features = ["attributes"] }
 async-trait = "^0.1"
 atty = "^0.2"
 base64 = "^0.13"
