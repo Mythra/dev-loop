@@ -189,7 +189,7 @@ dependencies = [
  "memchr",
  "num_cpus",
  "once_cell",
- "pin-project-lite 0.2.4",
+ "pin-project-lite 0.2.5",
  "pin-utils",
  "slab",
  "wasm-bindgen-futures",
@@ -501,7 +501,7 @@ dependencies = [
  "log",
  "num_cpus",
  "once_cell",
- "pin-project-lite 0.2.4",
+ "pin-project-lite 0.2.5",
  "semver 0.11.0",
  "serde",
  "serde_json",
@@ -1085,9 +1085,9 @@ checksum = "c917123afa01924fc84bb20c4c03f004d9c38e5127e3c039bbf7f4b9c76a2f6b"
 
 [[package]]
 name = "pin-project-lite"
-version = "0.2.4"
+version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "439697af366c49a6d0a010c56a0d97685bc140ce0d377b13a2ea2aa42d64a827"
+checksum = "0cf491442e4b033ed1c722cb9f0df5fcfcf4de682466c46469c36bc47dc5548a"
 
 [[package]]
 name = "pin-utils"
@@ -1473,7 +1473,7 @@ checksum = "01ebdc2bb4498ab1ab5f5b73c5803825e60199229ccba0698170e3be0e7f959f"
 dependencies = [
  "cfg-if 1.0.0",
  "log",
- "pin-project-lite 0.2.4",
+ "pin-project-lite 0.2.5",
  "tracing-attributes",
  "tracing-core",
 ]
